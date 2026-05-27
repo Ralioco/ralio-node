@@ -1,0 +1,8 @@
+# Default owners for everything in the repo.
+* @lgrosales
+
+# Security-sensitive crypto and auth lifecycle get explicit ownership.
+/src/crypto.ts @lgrosales
+/src/auth.ts @lgrosales
+/src/transport.ts @lgrosales
+/src/registration.ts @lgrosales
