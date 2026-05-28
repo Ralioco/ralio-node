@@ -11,14 +11,12 @@
  * so two concurrent callers must never race a refresh.
  */
 
-import type { KeyObject } from "node:crypto";
-
-import { CLIENT_ASSERTION_TYPE, signClientAssertion } from "./crypto.js";
+import { CLIENT_ASSERTION_TYPE, signClientAssertion, type CryptoKey } from "./crypto.js";
 import { raiseForResponse } from "./errors.js";
 
 export interface TokenManagerOptions {
   clientId: string;
-  privateKey: KeyObject;
+  privateKey: CryptoKey;
   kid: string;
   tokenUrl: string;
   scopes?: string[];
@@ -28,7 +26,7 @@ export interface TokenManagerOptions {
 
 export class TokenManager {
   private readonly clientId: string;
-  private readonly privateKey: KeyObject;
+  private readonly privateKey: CryptoKey;
   private readonly kid: string;
   private readonly tokenUrl: string;
   private readonly scopes?: string[];

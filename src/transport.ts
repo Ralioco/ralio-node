@@ -7,17 +7,15 @@
  * is single-use server-side, so the retry must re-sign).
  */
 
-import type { KeyObject } from "node:crypto";
-
 import type { TokenManager } from "./auth.js";
-import { signDpopProof, type PublicJwk } from "./crypto.js";
+import { signDpopProof, type CryptoKey, type PublicJwk } from "./crypto.js";
 import { RalioAPIError, raiseForResponse } from "./errors.js";
 import { buildStreamEvent, type ChatStreamEvent } from "./types.js";
 
 export interface TransportOptions {
   baseUrl: string;
   tokens: TokenManager;
-  privateKey: KeyObject;
+  privateKey: CryptoKey;
   publicJwk: PublicJwk;
   /** Per-request timeout in ms. Applies to `request`, not to SSE streams. */
   requestTimeoutMs?: number;
@@ -31,7 +29,7 @@ interface RequestOptions {
 export class Transport {
   private readonly baseUrl: string;
   private readonly tokens: TokenManager;
-  private readonly privateKey: KeyObject;
+  private readonly privateKey: CryptoKey;
   private readonly publicJwk: PublicJwk;
   private readonly requestTimeoutMs?: number;
 
