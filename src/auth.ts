@@ -11,7 +11,7 @@
  * so two concurrent callers must never race a refresh.
  */
 
-import { CLIENT_ASSERTION_TYPE, signClientAssertion } from "./crypto.js";
+import { CLIENT_ASSERTION_TYPE, signClientAssertion, type CryptoKey } from "./crypto.js";
 import { raiseForResponse } from "./errors.js";
 
 export interface TokenManagerOptions {

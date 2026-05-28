@@ -10,7 +10,7 @@
  * - Client assertions follow RFC 7521/7523; DPoP proofs follow RFC 9449.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, type webcrypto } from "node:crypto";
 import {
   SignJWT,
   exportPKCS8,
@@ -19,6 +19,13 @@ import {
   generateKeyPair as joseGenerateKeyPair,
   calculateJwkThumbprint,
 } from "jose";
+
+/**
+ * Web-Crypto `CryptoKey`, re-exported from `node:crypto` so consumers don't
+ * need DOM lib types. This is what `jose` v6 returns from `importPKCS8` and
+ * `generateKeyPair` and what we accept everywhere a private key is needed.
+ */
+export type CryptoKey = webcrypto.CryptoKey;
 
 export const CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 

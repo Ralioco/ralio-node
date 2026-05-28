@@ -23,7 +23,8 @@ generation, or token refresh.
 npm install @ralioco/sdk
 ```
 
-Requires Node.js 20+. The SDK is ESM-first and ships CommonJS too; types are
+Requires Node.js 20.19+, 22.13+, or 24+ (matches our toolchain's
+`engines.node` floor). The SDK is ESM-first and ships CommonJS too; types are
 bundled.
 
 ## Authentication model

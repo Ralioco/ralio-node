@@ -8,7 +8,7 @@
  */
 
 import type { TokenManager } from "./auth.js";
-import { signDpopProof, type PublicJwk } from "./crypto.js";
+import { signDpopProof, type CryptoKey, type PublicJwk } from "./crypto.js";
 import { RalioAPIError, raiseForResponse } from "./errors.js";
 import { buildStreamEvent, type ChatStreamEvent } from "./types.js";
 
