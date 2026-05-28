@@ -79,10 +79,11 @@ export async function privateKeyToPem(privateKey: KeyObject): Promise<string> {
 export async function loadPrivateKey(pem: string): Promise<KeyMaterial> {
   let key: KeyObject;
   try {
-    key = (await importPKCS8(pem, "ES256")) as KeyObject;
+    key = (await importPKCS8(pem, "ES256", { extractable: true })) as KeyObject;
   } catch (err) {
     throw new Error(
       `Ralio credentials require a P-256 (EC) private key: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   return fromPrivateKey(key);
