@@ -10,7 +10,7 @@
  * - Client assertions follow RFC 7521/7523; DPoP proofs follow RFC 9449.
  */
 
-import { createHash, randomBytes, type KeyObject } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   SignJWT,
   exportPKCS8,
@@ -35,7 +35,7 @@ export interface PublicJwk {
 
 /** A loaded credential: the private key plus its canonical public JWK and kid. */
 export interface KeyMaterial {
-  privateKey: KeyObject;
+  privateKey: CryptoKey;
   publicJwk: PublicJwk;
   kid: string;
 }
@@ -60,26 +60,28 @@ export async function jwkThumbprint(jwk: PublicJwk): Promise<string> {
 /** Mint a P-256 keypair and return its key material. */
 export async function generateKeypair(): Promise<KeyMaterial> {
   const { privateKey } = await joseGenerateKeyPair("ES256", { extractable: true });
-  return fromPrivateKey(privateKey as KeyObject);
+  return fromPrivateKey(privateKey);
 }
 
 /** Derive the canonical public JWK + kid from an already-loaded private key. */
-export async function fromPrivateKey(privateKey: KeyObject): Promise<KeyMaterial> {
+export async function fromPrivateKey(privateKey: CryptoKey): Promise<KeyMaterial> {
   const publicJwk = canonicalize(await exportJWK(privateKey));
   const kid = await jwkThumbprint(publicJwk);
   return { privateKey, publicJwk, kid };
 }
 
 /** Serialize a private key to PKCS8 PEM. */
-export async function privateKeyToPem(privateKey: KeyObject): Promise<string> {
+export async function privateKeyToPem(privateKey: CryptoKey): Promise<string> {
   return exportPKCS8(privateKey);
 }
 
 /** Load a PKCS8 PEM P-256 private key, returning full key material. */
 export async function loadPrivateKey(pem: string): Promise<KeyMaterial> {
-  let key: KeyObject;
+  let key: CryptoKey;
   try {
-    key = (await importPKCS8(pem, "ES256", { extractable: true })) as KeyObject;
+    // Extractable so we can derive the public JWK + kid that the server's
+    // `cnf.jkt` and the DPoP proof header must reference.
+    key = await importPKCS8(pem, "ES256", { extractable: true });
   } catch (err) {
     throw new Error(
       `Ralio credentials require a P-256 (EC) private key: ${(err as Error).message}`,
@@ -96,7 +98,7 @@ export async function loadPrivateKey(pem: string): Promise<KeyMaterial> {
  * URL. `kid` is the JWK thumbprint so the server can locate the binding.
  */
 export async function signClientAssertion(
-  privateKey: KeyObject,
+  privateKey: CryptoKey,
   opts: {
     clientId: string;
     audience: string;
@@ -125,7 +127,7 @@ export async function signClientAssertion(
  * matches the access token's `cnf.jkt`.
  */
 export async function signDpopProof(
-  privateKey: KeyObject,
+  privateKey: CryptoKey,
   opts: {
     method: string;
     url: string;
