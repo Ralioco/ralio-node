@@ -4,6 +4,10 @@ name: Release
 # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN is stored.
 # One-time setup: configure this repo + workflow as a trusted publisher for the
 # `@ralioco/sdk` package at https://www.npmjs.com/package/@ralioco/sdk/access.
+#
+# OIDC Trusted Publishing requires npm >= 11.5.1. Node 22 ships npm 10.x, which
+# cannot authenticate via OIDC (the publish PUT comes through unauthenticated
+# and the registry returns a 404), so we upgrade npm before publishing.
 
 on:
   push:
@@ -26,6 +30,7 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
+      - run: npm install -g npm@latest # OIDC Trusted Publishing needs npm >= 11.5.1
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
