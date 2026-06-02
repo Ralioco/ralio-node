@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeJwt } from "jose";
 
 import { RalioClient } from "../src/client";
-import { RalioPermissionError, RalioValidationError } from "../src/errors";
+import { RalioConfigError, RalioPermissionError, RalioValidationError } from "../src/errors";
 import {
   BASE_URL,
   installFetch,
@@ -154,5 +154,80 @@ describe("RalioClient", () => {
     await expect(client.transactions.list({ limit: -1 })).rejects.toBeInstanceOf(
       RalioValidationError,
     );
+  });
+
+  it("agents.list parses the bound agent", async () => {
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`GET ${BASE_URL}/api/agents`, () =>
+      jsonResponse(200, [
+        {
+          id: "a1",
+          name: "Payments",
+          agent_number: 1,
+          banking_provider: "griffin",
+          created_at: "t",
+        },
+      ]),
+    );
+
+    const client = await makeClient();
+    const agents = await client.agents.list();
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.id).toBe("a1");
+    expect(agents[0]!.name).toBe("Payments");
+    expect(agents[0]!.agentNumber).toBe(1);
+    expect(agents[0]!.bankingProvider).toBe("griffin");
+  });
+
+  it("chat.send without agentId resolves the bound agent and sends it", async () => {
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`GET ${BASE_URL}/api/agents`, () =>
+      jsonResponse(200, [{ id: "bound-agent", name: "Only" }]),
+    );
+    mock.on(`POST ${BASE_URL}/api/chat`, () =>
+      jsonResponse(200, { reply: "ok", conversation_id: "c1", new_messages: [] }),
+    );
+
+    const client = await makeClient();
+    const reply = await client.chat.send({ message: "hi" });
+
+    expect(reply.reply).toBe("ok");
+    const chatCall = mock.calls.find((c) => c.url === `${BASE_URL}/api/chat`)!;
+    expect(JSON.parse(chatCall.body!).agent_id).toBe("bound-agent");
+  });
+
+  it("chat.send caches the resolved agent across calls", async () => {
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`GET ${BASE_URL}/api/agents`, () =>
+      jsonResponse(200, [{ id: "bound-agent", name: "Only" }]),
+    );
+    mock.on(`POST ${BASE_URL}/api/chat`, () =>
+      jsonResponse(200, { reply: "ok", conversation_id: "c1", new_messages: [] }),
+    );
+
+    const client = await makeClient();
+    await client.chat.send({ message: "one" });
+    await client.chat.send({ message: "two" });
+
+    const listCalls = mock.calls.filter((c) => c.url === `${BASE_URL}/api/agents`);
+    expect(listCalls).toHaveLength(1);
+  });
+
+  it("chat.send throws RalioConfigError when the credential reaches multiple agents", async () => {
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`GET ${BASE_URL}/api/agents`, () =>
+      jsonResponse(200, [
+        { id: "a1", name: "One" },
+        { id: "a2", name: "Two" },
+      ]),
+    );
+
+    const client = await makeClient();
+    await expect(client.chat.send({ message: "hi" })).rejects.toBeInstanceOf(RalioConfigError);
   });
 });
