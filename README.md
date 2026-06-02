@@ -65,13 +65,6 @@ console.log(binding.clientId); // cb_... — store this alongside the key
 `RalioRegistrationError` if the binding is rejected / expires / times out). The
 private key never leaves the host.
 
-> **Where does the agent ID come from?** `register()` resolves to
-> `{ clientId, scopes }` — the credential handle, **not** an agent ID. The agent
-> you address in `chat.send({ agentId })` is the one the owner pinned the ticket
-> to when minting it (chosen in the console; shown on the agent's settings page).
-> Registration never echoes it back, so take `agentId` from your own
-> configuration — don't expect it on the `register()` result.
-
 ## Use the client
 
 ```ts
@@ -82,16 +75,15 @@ const client = await RalioClient.create({
   privateKeyPath: "ralio-key.pem",
 });
 
-// One-shot chat
+// One-shot chat — agentId is resolved automatically for a single-agent
+// credential; pass agentId explicitly to target one of several agents.
 const reply = await client.chat.send({
-  agentId: "d4e5...",
   message: "What is my current balance?",
 });
 console.log(reply.reply);
 
 // Streaming chat (server-sent events)
 for await (const event of client.chat.stream({
-  agentId: "d4e5...",
   message: "List my recent payments",
 })) {
   if (event.event === "text_delta") {

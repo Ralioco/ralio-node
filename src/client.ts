@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { TokenManager } from "./auth.js";
 import { loadPrivateKey } from "./crypto.js";
 import { DEFAULT_BASE_URL } from "./registration.js";
-import { ChatResource, TransactionsResource } from "./resources/index.js";
+import { AgentsResource, ChatResource, TransactionsResource } from "./resources/index.js";
 import { Transport } from "./transport.js";
 
 export interface RalioClientOptions {
@@ -33,11 +33,13 @@ export interface RalioClientOptions {
  * ```
  */
 export class RalioClient {
+  readonly agents: AgentsResource;
   readonly chat: ChatResource;
   readonly transactions: TransactionsResource;
 
   private constructor(transport: Transport) {
-    this.chat = new ChatResource(transport);
+    this.agents = new AgentsResource(transport);
+    this.chat = new ChatResource(transport, this.agents);
     this.transactions = new TransactionsResource(transport);
   }
 

@@ -24,6 +24,25 @@ export interface CredentialBinding {
   scopes: string[];
 }
 
+/** A payment agent the caller can address. */
+export interface Agent {
+  id: string;
+  name: string;
+  agentNumber: number | null;
+  bankingProvider: string | null;
+  createdAt: string | null;
+}
+
+export function parseAgent(data: Json): Agent {
+  return {
+    id: str(data.id),
+    name: str(data.name),
+    agentNumber: typeof data.agent_number === "number" ? data.agent_number : null,
+    bankingProvider: optStr(data.banking_provider),
+    createdAt: optStr(data.created_at),
+  };
+}
+
 export interface Message {
   id: string;
   role: string;
