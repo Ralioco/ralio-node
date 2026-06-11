@@ -12,8 +12,10 @@
 import { RalioClient, register } from "../src/index.js";
 
 /**
- * Run this once. Resolves when the owner approves in the console; the
- * credentials are persisted to ~/.ralio/ so the client needs no arguments.
+ * Run this once. The binding is active as soon as the call returns (the
+ * owner consented by minting the ticket and gets an email receipt with a
+ * revoke link); the credentials are persisted to ~/.ralio/ so the client
+ * needs no arguments.
  */
 async function registerOnce(): Promise<void> {
   const binding = await register(); // ticket from RALIO_REGISTRATION_TICKET

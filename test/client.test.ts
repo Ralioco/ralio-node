@@ -292,13 +292,12 @@ describe("RalioClient zero-config", () => {
     const mock = installFetch();
     withToken(mock);
     const REG = `${BASE_URL}/api/credential-bindings/registrations`;
-    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
-    mock.on(`GET ${REG}/pt_1`, () => jsonResponse(200, { status: "active", client_id: "cb_e2e" }));
+    mock.on(`POST ${REG}`, () => jsonResponse(201, { client_id: "cb_e2e" }));
     mock.on(`POST ${BASE_URL}/api/chat`, () =>
       jsonResponse(200, { reply: "done", conversation_id: "c1", new_messages: [] }),
     );
 
-    const binding = await register({ pollIntervalMs: 0 });
+    const binding = await register();
     expect(binding.clientId).toBe("cb_e2e");
 
     const client = new RalioClient();

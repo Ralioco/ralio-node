@@ -7,7 +7,7 @@
   - `register()` defaults its ticket to the `RALIO_REGISTRATION_TICKET`
     environment variable (the same one the CLI reads) and throws a
     `RalioConfigError` when neither is set.
-  - On approval, `register()` mints the first access token and persists the
+  - On activation, `register()` mints the first access token and persists the
     credentials to `~/.ralio/` — the same store the CLI uses, so
     `register()` and `ralio auth agent` are interchangeable. The private key
     defaults to `~/.ralio/keys/<jkt>.pem`; `privateKeyPath` still overrides.
@@ -19,8 +19,24 @@
     granted token scope rather than echoing `requestedScopes`.
   - New env vars: `RALIO_API_URL` (API origin override, matching the CLI) and
     `RALIO_CONFIG_DIR` (credential store location, default `~/.ralio`).
-  - A key bound to nothing is removed when a registration is rejected or
-    expires (kept on timeout, in case the owner approves late).
+  - A key bound to nothing is removed when a registration fails.
+- Synchronous activation (server PR #1182): the binding is active as soon as
+  `POST /api/credential-bindings/registrations` returns — owner consent
+  happens at ticket minting, and the owner receives an email receipt with a
+  revoke link.
+  - `register()` no longer polls for owner approval; the `pollIntervalMs`
+    and `timeoutMs` options are gone, along with the pending / rejected /
+    expired-approval states.
+  - Ticket errors (`invalid_ticket`, `ticket_expired`,
+    `ticket_already_consumed`, `public_key_already_in_use`,
+    `invalid_public_key`, `invalid_scope`, `scope_exceeds_ticket_ceiling`)
+    map into `RalioRegistrationError`, surfacing the server's
+    `error_description` — a consumed ticket reports when and by which host
+    it was spent, so the operator knows to have the owner revoke the
+    resulting credential.
+  - A fingerprint mismatch now names the live `client_id` to revoke in the
+    console; a 2xx response without a `client_id` (pre-cutover server)
+    fails with an "upgrade the server" message and keeps the private key.
 
 ## 0.1.2 (2026-06-01)
 

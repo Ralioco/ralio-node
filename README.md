@@ -34,10 +34,12 @@ key that lives on exactly one host:
 
 1. The **owner** mints a one-time registration ticket in the console
    (**Settings → Credentials → New credential**), choosing the target agent and
-   a scope ceiling. They send you the `ralio-reg-…` ticket.
+   a scope ceiling. That is where consent happens. They send you the
+   `ralio-reg-…` ticket.
 2. You call `register()` once on the agent host. It generates a keypair
-   locally, submits the public key, and waits until the owner approves the
-   binding in the console. The resulting credentials are persisted to
+   locally and submits the public key with the ticket; the binding is active
+   as soon as the server responds — no approval step, no polling. The owner
+   gets an email receipt with a revoke link. The credentials are persisted to
    `~/.ralio/` — the same store the `ralio` CLI uses, so `register()` and
    `ralio auth agent` are interchangeable.
 3. From then on, `RalioClient` mints and refreshes DPoP-bound access tokens
@@ -54,16 +56,16 @@ calls:
 ```ts
 import { register, RalioClient } from "@ralioco/sdk";
 
-await register(); // run once; resolves when the owner approves in the console
+await register(); // run once; the binding is active when this returns
 
 const client = new RalioClient(); // zero-config: reads the persisted credentials
 const reply = await client.chat.send({ message: "What is my current balance?" });
 ```
 
-`register()` resolves once the owner approves (or rejects with a
-`RalioRegistrationError` if the binding is rejected / expires / times out). The
-private key is generated locally, written to `~/.ralio/keys/<jkt>.pem`, and
-never leaves the host.
+`register()` activates the binding in a single call (or rejects with a
+`RalioRegistrationError` if the ticket is invalid, expired, or already
+consumed). The private key is generated locally, written to
+`~/.ralio/keys/<jkt>.pem`, and never leaves the host.
 
 Everything is overridable when you want to manage credentials yourself:
 
@@ -156,7 +158,7 @@ All errors subclass `RalioError`:
 | `RalioValidationError` (422) | Invalid field values or business-rule violation                 |
 | `RalioRateLimitError` (429)  | Rate limited — back off and retry                               |
 | `RalioAPIError`              | Any other HTTP error (carries `statusCode`, `detail`)           |
-| `RalioRegistrationError`     | Registration rejected, expired, or timed out                    |
+| `RalioRegistrationError`     | Registration failed (invalid / expired / consumed ticket)       |
 | `RalioConfigError`           | Local configuration problem                                     |
 
 ```ts

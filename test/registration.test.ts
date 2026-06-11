@@ -30,21 +30,16 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-/** Mock a registration that the owner approves after one pending poll. */
-function approvedRegistration(mock: FetchMock, clientId = "cb_new"): void {
-  mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
-  mock.on(
-    `GET ${REG}/pt_1`,
-    () => jsonResponse(200, { status: "pending_approval" }),
-    () => jsonResponse(200, { status: "active", client_id: clientId }),
-  );
+/** Mock a registration that activates synchronously on submit. */
+function activatedRegistration(mock: FetchMock, clientId = "cb_new"): void {
+  mock.on(`POST ${REG}`, () => jsonResponse(201, { client_id: clientId }));
   mock.on(`POST ${TOKEN_URL}`, () => jsonResponse(200, tokenResponse));
 }
 
 describe("register", () => {
-  it("completes the happy path, mints a token, and persists credentials", async () => {
+  it("activates in one call, mints a token, and persists credentials", async () => {
     const mock = installFetch();
-    approvedRegistration(mock);
+    activatedRegistration(mock);
 
     const keyPath = await tempKeyPath();
     const binding = await register({
@@ -52,7 +47,6 @@ describe("register", () => {
       privateKeyPath: keyPath,
       baseUrl: BASE_URL,
       requestedScopes: ["agents:execute"],
-      pollIntervalMs: 0,
     });
 
     expect(binding.clientId).toBe("cb_new");
@@ -61,8 +55,11 @@ describe("register", () => {
     expect(binding.scopes).toEqual(["agents:execute", "transactions:read"]);
     await expect(access(keyPath)).resolves.toBeUndefined();
 
-    const submitted = mock.calls.find((c) => c.method === "POST" && c.url === REG)!;
-    expect(submitted.body).toContain("public_key_jwk");
+    // One POST to the registration endpoint, no polling.
+    const regCalls = mock.calls.filter((c) => c.url.startsWith(REG));
+    expect(regCalls).toHaveLength(1);
+    expect(regCalls[0]!.method).toBe("POST");
+    expect(regCalls[0]!.body).toContain("public_key_jwk");
 
     // First mint: client_credentials with a private_key_jwt assertion.
     const mint = mock.calls.find((c) => c.url === TOKEN_URL)!;
@@ -86,9 +83,9 @@ describe("register", () => {
   it("falls back to RALIO_REGISTRATION_TICKET and the default key path", async () => {
     vi.stubEnv("RALIO_REGISTRATION_TICKET", "ralio-reg-env");
     const mock = installFetch();
-    approvedRegistration(mock);
+    activatedRegistration(mock);
 
-    const binding = await register({ baseUrl: BASE_URL, pollIntervalMs: 0 });
+    const binding = await register({ baseUrl: BASE_URL });
 
     expect(binding.clientId).toBe("cb_new");
     expect(binding.keyPath).toBe(keyPathFor((await loadCredentials())!.key_jkt!));
@@ -106,59 +103,96 @@ describe("register", () => {
     expect((err as Error).message).toMatch(/RALIO_REGISTRATION_TICKET/);
   });
 
-  it("rejects when the binding is rejected, and removes the key", async () => {
+  it("surfaces a consumed ticket's description and context, and removes the key", async () => {
     const mock = installFetch();
-    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
-    mock.on(`GET ${REG}/pt_1`, () => jsonResponse(200, { status: "rejected" }));
-
-    const keyPath = await tempKeyPath();
-    await expect(
-      register({ ticket: "t", privateKeyPath: keyPath, baseUrl: BASE_URL, pollIntervalMs: 0 }),
-    ).rejects.toThrow(/rejected/);
-    await expect(access(keyPath)).rejects.toThrow();
-    expect(await loadCredentials()).toBeNull();
-  });
-
-  it("treats a 404 poll as expiry", async () => {
-    const mock = installFetch();
-    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
-    mock.on(`GET ${REG}/pt_1`, () => jsonResponse(404, { detail: "gone" }));
-
-    await expect(register({ ticket: "t", baseUrl: BASE_URL, pollIntervalMs: 0 })).rejects.toThrow(
-      /expired/,
+    mock.on(`POST ${REG}`, () =>
+      jsonResponse(409, {
+        detail: {
+          error: "ticket_already_consumed",
+          error_description:
+            "This ticket was already used. If that wasn't you, ask the owner " +
+            "to revoke the resulting credential in the console.",
+          used_at: "2026-06-10T09:00:00Z",
+          used_by_host: "ci-runner-7",
+        },
+      }),
     );
-  });
-
-  it("times out while pending, keeping the key for a late approval", async () => {
-    const mock = installFetch();
-    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
-    mock.on(`GET ${REG}/pt_1`, () => jsonResponse(200, { status: "pending_approval" }));
 
     const keyPath = await tempKeyPath();
     const err = await register({
       ticket: "t",
       privateKeyPath: keyPath,
       baseUrl: BASE_URL,
-      pollIntervalMs: 0,
-      timeoutMs: 0,
     }).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(RalioRegistrationError);
-    expect((err as Error).message).toMatch(/timed out/);
-    await expect(access(keyPath)).resolves.toBeUndefined();
+    expect((err as Error).message).toMatch(/already used/);
+    expect((err as Error).message).toMatch(/revoke/);
+    expect((err as Error).message).toContain("used at 2026-06-10T09:00:00Z");
+    expect((err as Error).message).toContain("by ci-runner-7");
+    await expect(access(keyPath)).rejects.toThrow();
+    expect(await loadCredentials()).toBeNull();
   });
 
-  it("aborts on a fingerprint mismatch and removes the key", async () => {
+  it("maps ticket errors without a description to their error code", async () => {
+    const mock = installFetch();
+    mock.on(`POST ${REG}`, () => jsonResponse(410, { detail: { error: "ticket_expired" } }));
+
+    await expect(register({ ticket: "t", baseUrl: BASE_URL })).rejects.toThrow(/ticket_expired/);
+  });
+
+  it("maps 422 validation errors into RalioRegistrationError", async () => {
     const mock = installFetch();
     mock.on(`POST ${REG}`, () =>
-      jsonResponse(202, { fingerprint: "tampered", poll_token: "pt_1" }),
+      jsonResponse(422, {
+        detail: {
+          error: "scope_exceeds_ticket_ceiling",
+          error_description: "requested scope exceeds the ticket's ceiling",
+        },
+      }),
+    );
+
+    const err = await register({ ticket: "t", baseUrl: BASE_URL }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RalioRegistrationError);
+    expect((err as Error).message).toMatch(/exceeds the ticket's ceiling/);
+  });
+
+  it("aborts on a fingerprint mismatch, naming the live binding to revoke", async () => {
+    const mock = installFetch();
+    mock.on(`POST ${REG}`, () =>
+      jsonResponse(201, { fingerprint: "tampered", client_id: "cb_live" }),
     );
 
     const keyPath = await tempKeyPath();
-    await expect(
-      register({ ticket: "t", privateKeyPath: keyPath, baseUrl: BASE_URL, pollIntervalMs: 0 }),
-    ).rejects.toThrow(/fingerprint mismatch/);
+    const err = await register({
+      ticket: "t",
+      privateKeyPath: keyPath,
+      baseUrl: BASE_URL,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RalioRegistrationError);
+    expect((err as Error).message).toMatch(/fingerprint mismatch/);
+    expect((err as Error).message).toContain("cb_live");
+    expect((err as Error).message).toMatch(/revoke/);
     await expect(access(keyPath)).rejects.toThrow();
+    expect(await loadCredentials()).toBeNull();
+  });
+
+  it("fails on a pre-cutover server (no client_id), keeping the key", async () => {
+    const mock = installFetch();
+    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
+
+    const keyPath = await tempKeyPath();
+    const err = await register({
+      ticket: "t",
+      privateKeyPath: keyPath,
+      baseUrl: BASE_URL,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RalioRegistrationError);
+    expect((err as Error).message).toMatch(/owner approval/);
+    expect((err as Error).message).toMatch(/upgrade the server/);
+    await expect(access(keyPath)).resolves.toBeUndefined();
   });
 
   it("refuses to overwrite an existing key", async () => {
