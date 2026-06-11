@@ -93,10 +93,17 @@ for await (const event of client.chat.stream({
   }
 }
 
-// Transactions
-const txns = await client.transactions.list({ limit: 20 });
-for (const txn of txns) {
+// Transactions — list endpoints are paginated.
+const page = await client.transactions.list({ perPage: 20 });
+console.log(`showing ${page.data.length} of ${page.total} transactions`);
+for (const txn of page.data) {
   console.log(txn.date, txn.amount, txn.currency, txn.creditor, txn.status);
+}
+
+// Payment intents — what the agent proposed, with per-leg execution detail.
+const intents = await client.paymentIntents.list({ perPage: 20 });
+for (const intent of intents.data) {
+  console.log(intent.createdAt, intent.totalAmount, intent.currency, intent.approvalStatus);
 }
 ```
 
@@ -113,7 +120,8 @@ There is no `payments.create()` method by design. Payments are executed by the
 **agent**, not by direct REST calls: drive the agent with `chat.send` /
 `chat.stream` ("Pay £500 to Bob for the April invoice") and it will create the
 payment, subject to its spend limits and approval rules. Use
-`transactions.list` to read what the agent did.
+`transactions.list` (executed payments) and `paymentIntents.list` (what the
+agent proposed, with per-leg status) to read what the agent did.
 
 ## Errors
 

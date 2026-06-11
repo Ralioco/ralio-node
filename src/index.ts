@@ -9,9 +9,16 @@ export type {
   ChatStreamEvent,
   CredentialBinding,
   Message,
+  Page,
+  PaymentInstruction,
+  PaymentIntent,
   Transaction,
 } from "./types.js";
-export type { ChatParams, ListTransactionsParams } from "./resources/index.js";
+export type {
+  ChatParams,
+  ListPaymentIntentsParams,
+  ListTransactionsParams,
+} from "./resources/index.js";
 
 export {
   RalioError,
