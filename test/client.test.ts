@@ -2,12 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeJwt } from "jose";
 
 import { RalioClient } from "../src/client";
+import { generateKeypair, privateKeyToPem } from "../src/crypto";
 import { RalioConfigError, RalioPermissionError, RalioValidationError } from "../src/errors";
+import { register } from "../src/registration";
+import { ensureKeysDir, keyPathFor, saveCredentials, savePrivateKey } from "../src/store";
 import {
   BASE_URL,
   installFetch,
   jsonResponse,
   sseResponse,
+  stubConfigDir,
   tokenResponse,
   writeKeyFile,
   type FetchMock,
@@ -24,7 +28,16 @@ function withToken(mock: FetchMock): void {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+/** Persist a binding to the (stubbed) store, as register() would. */
+async function seedStore(clientId = "cb_stored"): Promise<void> {
+  const { privateKey, kid } = await generateKeypair();
+  await ensureKeysDir();
+  await savePrivateKey(keyPathFor(kid), await privateKeyToPem(privateKey));
+  await saveCredentials({ client_id: clientId, key_jkt: kid, auth_method: "private_key_jwt" });
+}
 
 describe("RalioClient", () => {
   it("chat.send carries DPoP auth headers and parses the reply", async () => {
@@ -229,5 +242,67 @@ describe("RalioClient", () => {
 
     const client = await makeClient();
     await expect(client.chat.send({ message: "hi" })).rejects.toBeInstanceOf(RalioConfigError);
+  });
+});
+
+describe("RalioClient zero-config", () => {
+  it("new RalioClient() reads the persisted credentials and authenticates", async () => {
+    await stubConfigDir();
+    await seedStore("cb_stored");
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`POST ${BASE_URL}/api/chat`, () =>
+      jsonResponse(200, { reply: "ok", conversation_id: "c1", new_messages: [] }),
+    );
+
+    const client = new RalioClient();
+    const reply = await client.chat.send({ agentId: "a1", message: "hi" });
+    expect(reply.reply).toBe("ok");
+
+    // The minted assertion is for the stored client_id.
+    const mint = mock.calls.find((c) => c.url === `${BASE_URL}/oauth/token`)!;
+    const assertion = decodeJwt(new URLSearchParams(mint.body!).get("client_assertion")!);
+    expect(assertion.iss).toBe("cb_stored");
+  });
+
+  it("fails with RalioConfigError when nothing is persisted", async () => {
+    await stubConfigDir();
+    installFetch();
+
+    await expect(RalioClient.create()).rejects.toBeInstanceOf(RalioConfigError);
+
+    const client = new RalioClient();
+    const err = await client.chat.send({ agentId: "a1", message: "hi" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RalioConfigError);
+    expect((err as Error).message).toMatch(/register\(\)/);
+  });
+
+  it("rejects clientId without privateKeyPath (and vice versa)", async () => {
+    await stubConfigDir();
+    installFetch();
+    await expect(RalioClient.create({ clientId: "cb_x" })).rejects.toBeInstanceOf(RalioConfigError);
+    await expect(RalioClient.create({ privateKeyPath: "k.pem" })).rejects.toBeInstanceOf(
+      RalioConfigError,
+    );
+  });
+
+  it("register() with only the env ticket, then new RalioClient(), end to end", async () => {
+    await stubConfigDir();
+    vi.stubEnv("RALIO_REGISTRATION_TICKET", "ralio-reg-e2e");
+    const mock = installFetch();
+    withToken(mock);
+    const REG = `${BASE_URL}/api/credential-bindings/registrations`;
+    mock.on(`POST ${REG}`, () => jsonResponse(202, { poll_token: "pt_1" }));
+    mock.on(`GET ${REG}/pt_1`, () => jsonResponse(200, { status: "active", client_id: "cb_e2e" }));
+    mock.on(`POST ${BASE_URL}/api/chat`, () =>
+      jsonResponse(200, { reply: "done", conversation_id: "c1", new_messages: [] }),
+    );
+
+    const binding = await register({ pollIntervalMs: 0 });
+    expect(binding.clientId).toBe("cb_e2e");
+
+    const client = new RalioClient();
+    const reply = await client.chat.send({ agentId: "a1", message: "hi" });
+    expect(reply.reply).toBe("done");
   });
 });

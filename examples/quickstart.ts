@@ -2,42 +2,34 @@
  * End-to-end example: register once, then chat and read transactions.
  *
  * Run the registration step on the host where the agent will live, after the
- * owner mints a ticket in the console (Settings -> Credentials -> New credential).
+ * owner mints a ticket in the console (Settings -> Credentials -> New credential)
+ * and you export it as RALIO_REGISTRATION_TICKET:
  *
+ *   RALIO_REGISTRATION_TICKET=ralio-reg-... tsx examples/quickstart.ts register
  *   tsx examples/quickstart.ts
  */
 
 import { RalioClient, register } from "../src/index.js";
 
-const KEY_PATH = "ralio-key.pem";
-const AGENT_ID = process.env.RALIO_AGENT_ID!;
-
-/** Run this once. Resolves when the owner approves in the console. */
-async function registerOnce(): Promise<string> {
-  const binding = await register({
-    ticket: process.env.RALIO_TICKET!,
-    privateKeyPath: KEY_PATH,
-    requestedScopes: ["agents:execute", "transactions:read"],
-  });
-  console.log("clientId:", binding.clientId); // persist this
-  return binding.clientId;
+/**
+ * Run this once. Resolves when the owner approves in the console; the
+ * credentials are persisted to ~/.ralio/ so the client needs no arguments.
+ */
+async function registerOnce(): Promise<void> {
+  const binding = await register(); // ticket from RALIO_REGISTRATION_TICKET
+  console.log("registered:", binding.clientId, "key at", binding.keyPath);
 }
 
 async function main(): Promise<void> {
-  const client = await RalioClient.create({
-    clientId: process.env.RALIO_CLIENT_ID!,
-    privateKeyPath: KEY_PATH,
-  });
+  const client = new RalioClient(); // zero-config: reads persisted credentials
 
   const reply = await client.chat.send({
-    agentId: AGENT_ID,
     message: "What is my current balance?",
   });
   console.log("reply:", reply.reply);
 
   console.log("--- streaming ---");
   for await (const event of client.chat.stream({
-    agentId: AGENT_ID,
     message: "List my recent payments",
   })) {
     if (event.event === "text_delta") {
@@ -54,12 +46,8 @@ async function main(): Promise<void> {
   }
 }
 
-// Uncomment to run registration instead of the main flow:
-// registerOnce().catch((err) => { console.error(err); process.exit(1); });
-
-main().catch((err) => {
+const entry = process.argv[2] === "register" ? registerOnce : main;
+entry().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-
-void registerOnce;

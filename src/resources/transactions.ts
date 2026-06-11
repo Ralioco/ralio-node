@@ -1,6 +1,6 @@
 /** Transactions resource — read executed payments (`transactions:read`). */
 
-import type { Transport } from "../transport.js";
+import type { TransportLike } from "../transport.js";
 import { parseTransaction, type Transaction } from "../types.js";
 
 export interface ListTransactionsParams {
@@ -9,7 +9,7 @@ export interface ListTransactionsParams {
 }
 
 export class TransactionsResource {
-  constructor(private readonly transport: Transport) {}
+  constructor(private readonly transport: TransportLike) {}
 
   /** List transactions across the caller's agents, newest first. */
   async list(params: ListTransactionsParams = {}): Promise<Transaction[]> {

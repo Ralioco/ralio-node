@@ -35,25 +35,43 @@ key that lives on exactly one host:
 1. The **owner** mints a one-time registration ticket in the console
    (**Settings → Credentials → New credential**), choosing the target agent and
    a scope ceiling. They send you the `ralio-reg-…` ticket.
-2. You call `register(...)` on the agent host. It generates a keypair locally,
-   submits the public key, and waits until the owner approves the binding in the
-   console. You get back a `clientId` (`cb_…`).
+2. You call `register()` once on the agent host. It generates a keypair
+   locally, submits the public key, and waits until the owner approves the
+   binding in the console. The resulting credentials are persisted to
+   `~/.ralio/` — the same store the `ralio` CLI uses, so `register()` and
+   `ralio auth agent` are interchangeable.
 3. From then on, `RalioClient` mints and refreshes DPoP-bound access tokens
    transparently and signs a fresh proof for every request.
 
 See the [API authentication guide](https://docs.ralio.co/api-reference/authentication)
 for the protocol details.
 
-## Register once
+## Quickstart
 
-Run this on the host where the integration will live, after the owner sends you
-a ticket:
+With the owner's ticket in `RALIO_REGISTRATION_TICKET`, onboarding is two
+calls:
+
+```ts
+import { register, RalioClient } from "@ralioco/sdk";
+
+await register(); // run once; resolves when the owner approves in the console
+
+const client = new RalioClient(); // zero-config: reads the persisted credentials
+const reply = await client.chat.send({ message: "What is my current balance?" });
+```
+
+`register()` resolves once the owner approves (or rejects with a
+`RalioRegistrationError` if the binding is rejected / expires / times out). The
+private key is generated locally, written to `~/.ralio/keys/<jkt>.pem`, and
+never leaves the host.
+
+Everything is overridable when you want to manage credentials yourself:
 
 ```ts
 import { register } from "@ralioco/sdk";
 
 const binding = await register({
-  ticket: "ralio-reg-...",
+  ticket: "ralio-reg-...", // instead of RALIO_REGISTRATION_TICKET
   privateKeyPath: "ralio-key.pem", // generated and written here
   requestedScopes: ["agents:execute", "transactions:read"],
 });
@@ -61,19 +79,19 @@ const binding = await register({
 console.log(binding.clientId); // cb_... — store this alongside the key
 ```
 
-`register()` resolves once the owner approves (or rejects with a
-`RalioRegistrationError` if the binding is rejected / expires / times out). The
-private key never leaves the host.
-
 ## Use the client
 
 ```ts
 import { RalioClient } from "@ralioco/sdk";
 
-const client = await RalioClient.create({
-  clientId: "cb_...",
-  privateKeyPath: "ralio-key.pem",
-});
+// Zero-config: reads the credentials persisted by register() / `ralio auth agent`.
+const client = new RalioClient();
+
+// Or manage credentials yourself:
+// const client = await RalioClient.create({
+//   clientId: "cb_...",
+//   privateKeyPath: "ralio-key.pem",
+// });
 
 // One-shot chat — agentId is resolved automatically for a single-agent
 // credential; pass agentId explicitly to target one of several agents.
@@ -104,8 +122,19 @@ for (const txn of txns) {
 automatically:
 
 ```ts
-using client = await RalioClient.create({ clientId: "cb_...", privateKeyPath: "ralio-key.pem" });
+using client = new RalioClient();
 ```
+
+Credentials load lazily on the first request; use `await RalioClient.create()`
+instead of `new RalioClient()` to load them eagerly and fail fast.
+
+## Environment variables
+
+| Variable                    | Meaning                                                             |
+| --------------------------- | ------------------------------------------------------------------- |
+| `RALIO_REGISTRATION_TICKET` | Default ticket for `register()` — same variable the CLI reads       |
+| `RALIO_API_URL`             | API origin (default `https://api.ralio.co`)                         |
+| `RALIO_CONFIG_DIR`          | Credential store location (default `~/.ralio`, shared with the CLI) |
 
 ## Payments
 

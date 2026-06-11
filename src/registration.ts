@@ -5,22 +5,48 @@
  * {@link register} on the agent host: it generates a P-256 keypair locally,
  * submits the public key with the ticket, and polls until the owner approves
  * the binding in the console. The private key never leaves the host.
+ *
+ * On approval the first access token is minted and the credentials are
+ * persisted to `~/.ralio/` (same store as `ralio auth agent`), so a
+ * no-argument `new RalioClient()` works from then on.
  */
 
-import { randomBytes } from "node:crypto";
-import { open, rename, rm, access } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access } from "node:fs/promises";
 
-import { generateKeypair, privateKeyToPem, type PublicJwk } from "./crypto.js";
-import { RalioRegistrationError, raiseForResponse } from "./errors.js";
+import {
+  CLIENT_ASSERTION_TYPE,
+  generateKeypair,
+  privateKeyToPem,
+  signClientAssertion,
+  type CryptoKey,
+  type PublicJwk,
+} from "./crypto.js";
+import { RalioConfigError, RalioRegistrationError, raiseForResponse } from "./errors.js";
+import {
+  deletePrivateKey,
+  ensureKeysDir,
+  keyPathFor,
+  resolveBaseUrl,
+  saveCredentials,
+  savePrivateKey,
+} from "./store.js";
 import type { CredentialBinding } from "./types.js";
 
-export const DEFAULT_BASE_URL = "https://api.ralio.co";
-const TERMINAL = new Set(["active", "rejected", "expired"]);
+export { DEFAULT_BASE_URL } from "./store.js";
 
 export interface RegisterOptions {
-  ticket: string;
-  privateKeyPath: string;
+  /**
+   * Registration ticket (`ralio-reg-…`) from the console. Defaults to the
+   * `RALIO_REGISTRATION_TICKET` environment variable — the same one the CLI
+   * and Python SDK read.
+   */
+  ticket?: string;
+  /**
+   * Where to write the private key. Defaults to `~/.ralio/keys/<jkt>.pem`
+   * inside the shared credential store.
+   */
+  privateKeyPath?: string;
+  /** API origin. Defaults to `RALIO_API_URL`, else production. */
   baseUrl?: string;
   requestedScopes?: string[];
   clientMetadata?: Record<string, unknown>;
@@ -32,41 +58,101 @@ export interface RegisterOptions {
   overwrite?: boolean;
 }
 
+type PollOutcome =
+  | { status: "active"; clientId: string }
+  | { status: "rejected" | "expired" | "invalid"; message: string }
+  | { status: "timeout" };
+
 /**
  * Run the registration flow and return the approved binding.
  *
- * Generates a keypair, writes the private key to `privateKeyPath`, and blocks
- * until the owner approves (up to `timeoutMs`). Rejects with a
- * {@link RalioRegistrationError} if the binding is rejected, expires, or the
- * timeout elapses.
+ * Generates a keypair, writes the private key to disk, and blocks until the
+ * owner approves (up to `timeoutMs`). On approval it mints the first access
+ * token and persists the credentials, so `new RalioClient()` needs no
+ * arguments afterwards. Rejects with a {@link RalioRegistrationError} if the
+ * binding is rejected, expires, or the timeout elapses.
  */
-export async function register(opts: RegisterOptions): Promise<CredentialBinding> {
-  const base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+export async function register(opts: RegisterOptions = {}): Promise<CredentialBinding> {
+  const ticket = (opts.ticket ?? process.env.RALIO_REGISTRATION_TICKET ?? "").trim();
+  if (!ticket) {
+    throw new RalioConfigError(
+      "Missing registration ticket: pass `ticket` or set RALIO_REGISTRATION_TICKET. " +
+        "Mint one in the console at Settings → Credentials.",
+    );
+  }
+  const base = resolveBaseUrl(opts.baseUrl);
   const pollIntervalMs = opts.pollIntervalMs ?? 3000;
   const timeoutMs = opts.timeoutMs ?? 900_000;
 
-  if (!opts.overwrite && (await exists(opts.privateKeyPath))) {
-    throw new RalioRegistrationError(
-      `${opts.privateKeyPath} already exists; pass overwrite: true to replace it`,
-    );
+  const { privateKey, publicJwk, kid } = await generateKeypair();
+
+  let keyPath: string;
+  if (opts.privateKeyPath) {
+    if (!opts.overwrite && (await exists(opts.privateKeyPath))) {
+      throw new RalioRegistrationError(
+        `${opts.privateKeyPath} already exists; pass overwrite: true to replace it`,
+      );
+    }
+    keyPath = opts.privateKeyPath;
+  } else {
+    // Thumbprint-named keys in the store are unique per keypair, so there is
+    // nothing to clobber.
+    await ensureKeysDir();
+    keyPath = keyPathFor(kid);
+  }
+  await savePrivateKey(keyPath, await privateKeyToPem(privateKey));
+
+  let pollToken: string;
+  try {
+    pollToken = await submit(base, ticket, opts, publicJwk, kid);
+  } catch (err) {
+    // No binding to bind it to — a key bound to nothing is dead weight.
+    await deletePrivateKey(keyPath);
+    throw err;
   }
 
-  const { privateKey, publicJwk, kid } = await generateKeypair();
-  await savePrivateKey(opts.privateKeyPath, await privateKeyToPem(privateKey));
+  const outcome = await poll(base, pollToken, pollIntervalMs, timeoutMs);
+  if (outcome.status === "timeout") {
+    // The owner may still approve after we stop polling, so the key stays:
+    // the binding's client_id is visible in the console and can be paired
+    // with this key via explicit RalioClient options.
+    throw new RalioRegistrationError(
+      `timed out waiting for owner approval; the private key remains at ${keyPath}`,
+    );
+  }
+  if (outcome.status !== "active") {
+    await deletePrivateKey(keyPath);
+    throw new RalioRegistrationError(outcome.message);
+  }
+  const clientId = outcome.clientId;
 
-  const pollToken = await submit(base, opts, publicJwk, kid);
-  const clientId = await poll(base, pollToken, pollIntervalMs, timeoutMs);
+  const token = await mintFirstToken(base, clientId, privateKey, kid);
+  await saveCredentials({
+    access_token: token.access_token,
+    refresh_token: token.refresh_token ?? "",
+    expires_in: token.expires_in ?? 1800,
+    obtained_at: Date.now() / 1000,
+    client_id: clientId,
+    key_jkt: kid,
+    key_path: keyPath,
+    scope: token.scope ?? "",
+    auth_method: "private_key_jwt",
+  });
 
-  return { clientId, scopes: opts.requestedScopes ?? [] };
+  const scopes = token.scope
+    ? token.scope.split(" ").filter(Boolean)
+    : (opts.requestedScopes ?? []);
+  return { clientId, scopes, keyPath };
 }
 
 async function submit(
   base: string,
+  ticket: string,
   opts: RegisterOptions,
   publicJwk: PublicJwk,
   fingerprint: string,
 ): Promise<string> {
-  const body: Record<string, unknown> = { ticket: opts.ticket, public_key_jwk: publicJwk };
+  const body: Record<string, unknown> = { ticket, public_key_jwk: publicJwk };
   if (opts.requestedScopes) body.requested_scopes = opts.requestedScopes;
   if (opts.clientMetadata) body.client_metadata = opts.clientMetadata;
 
@@ -97,31 +183,73 @@ async function poll(
   pollToken: string,
   intervalMs: number,
   timeoutMs: number,
-): Promise<string> {
+): Promise<PollOutcome> {
   const deadline = Date.now() + timeoutMs;
   const url = `${base}/api/credential-bindings/registrations/${pollToken}`;
   for (;;) {
     const response = await fetch(url);
     if (response.status === 404) {
-      throw new RalioRegistrationError("registration expired before approval");
+      // The poll token was wiped or aged out — terminal, same as expiry.
+      return { status: "expired", message: "registration expired before approval" };
     }
     await raiseForResponse(response);
     const body = (await response.json()) as { status?: string; client_id?: string };
     const status = body.status ?? "";
     if (status === "active") {
       if (typeof body.client_id !== "string" || !body.client_id) {
-        throw new RalioRegistrationError("binding active but no client_id returned");
+        return { status: "invalid", message: "binding active but no client_id returned" };
       }
-      return body.client_id;
+      return { status: "active", clientId: body.client_id };
     }
-    if (TERMINAL.has(status)) {
-      throw new RalioRegistrationError(`registration ${status}`);
+    if (status === "rejected" || status === "expired") {
+      return { status, message: `registration ${status}` };
     }
     if (Date.now() >= deadline) {
-      throw new RalioRegistrationError("timed out waiting for owner approval");
+      return { status: "timeout" };
     }
     await sleep(intervalMs);
   }
+}
+
+interface TokenResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+}
+
+/**
+ * Mint the first access token via `client_credentials` + `private_key_jwt`.
+ * No `scope` parameter: the grant inherits the binding's full scope ceiling,
+ * which the response echoes back.
+ */
+async function mintFirstToken(
+  base: string,
+  clientId: string,
+  privateKey: CryptoKey,
+  kid: string,
+): Promise<TokenResponse> {
+  const tokenUrl = `${base}/oauth/token`;
+  const assertion = await signClientAssertion(privateKey, {
+    clientId,
+    audience: tokenUrl,
+    kid,
+  });
+  const response = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_assertion_type: CLIENT_ASSERTION_TYPE,
+      client_assertion: assertion,
+    }).toString(),
+  });
+  await raiseForResponse(response);
+  const token = (await response.json()) as TokenResponse;
+  if (typeof token.access_token !== "string" || !token.access_token) {
+    throw new RalioRegistrationError("token endpoint returned no access_token");
+  }
+  return token;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -130,22 +258,6 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Write `pem` at `path`, mode 0600, atomically (temp file + rename). */
-async function savePrivateKey(path: string, pem: string): Promise<void> {
-  const dir = dirname(path);
-  const tmp = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
-  const handle = await open(tmp, "wx", 0o600);
-  try {
-    await handle.writeFile(pem);
-    await handle.close();
-    await rename(tmp, path);
-  } catch (err) {
-    await handle.close().catch(() => undefined);
-    await rm(tmp, { force: true });
-    throw err;
   }
 }
 

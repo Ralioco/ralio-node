@@ -1,7 +1,7 @@
 /** Chat resource — drive an agent with natural language (`agents:execute`). */
 
 import { RalioConfigError } from "../errors.js";
-import type { Transport } from "../transport.js";
+import type { TransportLike } from "../transport.js";
 import { parseChatReply, type ChatReply, type ChatStreamEvent } from "../types.js";
 import type { AgentsResource } from "./agents.js";
 
@@ -27,7 +27,7 @@ export class ChatResource {
   private cachedAgentId?: string;
 
   constructor(
-    private readonly transport: Transport,
+    private readonly transport: TransportLike,
     private readonly agents: AgentsResource,
   ) {}
 

@@ -21,12 +21,25 @@ export interface TransportOptions {
   requestTimeoutMs?: number;
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   jsonBody?: Record<string, unknown>;
   params?: Record<string, string | number | undefined>;
 }
 
-export class Transport {
+/**
+ * The surface resources call. Implemented by {@link Transport} and by the
+ * client's lazy wrapper that defers credential loading to the first request.
+ */
+export interface TransportLike {
+  request(method: string, path: string, opts?: RequestOptions): Promise<Response>;
+  streamSse(
+    method: string,
+    path: string,
+    opts?: { jsonBody?: Record<string, unknown> },
+  ): AsyncGenerator<ChatStreamEvent>;
+}
+
+export class Transport implements TransportLike {
   private readonly baseUrl: string;
   private readonly tokens: TokenManager;
   private readonly privateKey: CryptoKey;
