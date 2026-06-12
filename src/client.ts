@@ -5,7 +5,12 @@ import { readFile } from "node:fs/promises";
 import { TokenManager } from "./auth.js";
 import { loadPrivateKey } from "./crypto.js";
 import { RalioConfigError } from "./errors.js";
-import { AgentsResource, ChatResource, TransactionsResource } from "./resources/index.js";
+import {
+  AgentsResource,
+  ChatResource,
+  PaymentIntentsResource,
+  TransactionsResource,
+} from "./resources/index.js";
 import { credentialsPath, keyPathFor, loadCredentials, resolveBaseUrl } from "./store.js";
 import { Transport, type RequestOptions, type TransportLike } from "./transport.js";
 import type { ChatStreamEvent } from "./types.js";
@@ -45,6 +50,7 @@ export class RalioClient {
   readonly agents: AgentsResource;
   readonly chat: ChatResource;
   readonly transactions: TransactionsResource;
+  readonly paymentIntents: PaymentIntentsResource;
 
   private readonly transport: LazyTransport;
 
@@ -53,6 +59,7 @@ export class RalioClient {
     this.agents = new AgentsResource(this.transport);
     this.chat = new ChatResource(this.transport, this.agents);
     this.transactions = new TransactionsResource(this.transport);
+    this.paymentIntents = new PaymentIntentsResource(this.transport);
   }
 
   /** Build a client and load its credentials eagerly, failing fast. */

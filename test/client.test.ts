@@ -91,32 +91,41 @@ describe("RalioClient", () => {
     expect(jti1).not.toBe(jti2);
   });
 
-  it("transactions.list parses results and passes query params", async () => {
+  it("transactions.list parses the page envelope and passes query params", async () => {
     const mock = installFetch();
     withToken(mock);
     mock.on(`GET ${BASE_URL}/api/transactions`, () =>
-      jsonResponse(200, [
-        {
-          id: "txn_1",
-          amount: "500.00",
-          currency: "GBP",
-          status: "submitted",
-          creditor: "Bob",
-          date: "2026-04-04T10:05:00Z",
-        },
-      ]),
+      jsonResponse(200, {
+        transactions: [
+          {
+            id: "txn_1",
+            amount: "500.00",
+            currency: "GBP",
+            status: "submitted",
+            creditor: "Bob",
+            date: "2026-04-04T10:05:00Z",
+          },
+        ],
+        total: 42,
+        page: 1,
+        per_page: 10,
+      }),
     );
 
     const client = await makeClient();
-    const txns = await client.transactions.list({ agentId: "a1", limit: 10 });
+    const page = await client.transactions.list({ agentId: "a1", page: 1, perPage: 10 });
 
-    expect(txns).toHaveLength(1);
-    expect(txns[0]!.id).toBe("txn_1");
-    expect(txns[0]!.amount).toBe("500.00");
+    expect(page.total).toBe(42);
+    expect(page.page).toBe(1);
+    expect(page.perPage).toBe(10);
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]!.id).toBe("txn_1");
+    expect(page.data[0]!.amount).toBe("500.00");
 
     const call = mock.calls.find((c) => c.url.startsWith(`${BASE_URL}/api/transactions`))!;
     const params = new URL(call.url).searchParams;
-    expect(params.get("limit")).toBe("10");
+    expect(params.get("page")).toBe("1");
+    expect(params.get("per_page")).toBe("10");
     expect(params.get("agent_id")).toBe("a1");
   });
 
@@ -164,7 +173,7 @@ describe("RalioClient", () => {
     mock.on(`GET ${BASE_URL}/api/transactions`, () => jsonResponse(422, { detail: "bad limit" }));
 
     const client = await makeClient();
-    await expect(client.transactions.list({ limit: -1 })).rejects.toBeInstanceOf(
+    await expect(client.transactions.list({ perPage: -1 })).rejects.toBeInstanceOf(
       RalioValidationError,
     );
   });
@@ -242,6 +251,72 @@ describe("RalioClient", () => {
 
     const client = await makeClient();
     await expect(client.chat.send({ message: "hi" })).rejects.toBeInstanceOf(RalioConfigError);
+  });
+
+  it("paymentIntents.list parses the envelope, per-leg instructions, and params", async () => {
+    const mock = installFetch();
+    withToken(mock);
+    mock.on(`GET ${BASE_URL}/api/payment-intents`, () =>
+      jsonResponse(200, {
+        payment_intents: [
+          {
+            id: "pi_1",
+            agent_id: "a1",
+            agent_name: "Payments",
+            approval_status: "approved_by_user",
+            execution_status: "completed",
+            total_amount: "75.00",
+            currency: "GBP",
+            instruction_count: 2,
+            instructions: [
+              {
+                amount: "30.00",
+                currency: "GBP",
+                status: "completed",
+                creditor_name: "Acme",
+                transaction_id: "txn_1",
+                transaction_status: "delivered",
+              },
+              {
+                amount: "45.00",
+                currency: "GBP",
+                status: "failed",
+                creditor_name: "Beta",
+                execution_error: "insufficient funds",
+              },
+            ],
+          },
+        ],
+        total: 3,
+        page: 2,
+        per_page: 1,
+      }),
+    );
+
+    const client = await makeClient();
+    const page = await client.paymentIntents.list({ agentId: "a1", page: 2, perPage: 1 });
+
+    expect(page.total).toBe(3);
+    expect(page.page).toBe(2);
+    expect(page.perPage).toBe(1);
+    expect(page.data).toHaveLength(1);
+    const intent = page.data[0]!;
+    expect(intent.id).toBe("pi_1");
+    expect(intent.approvalStatus).toBe("approved_by_user");
+    expect(intent.executionStatus).toBe("completed");
+    expect(intent.totalAmount).toBe("75.00");
+    expect(intent.instructionCount).toBe(2);
+    expect(intent.instructions).toHaveLength(2);
+    expect(intent.instructions[0]!.creditorName).toBe("Acme");
+    expect(intent.instructions[0]!.transactionStatus).toBe("delivered");
+    expect(intent.instructions[1]!.status).toBe("failed");
+    expect(intent.instructions[1]!.executionError).toBe("insufficient funds");
+
+    const call = mock.calls.find((c) => c.url.startsWith(`${BASE_URL}/api/payment-intents`))!;
+    const params = new URL(call.url).searchParams;
+    expect(params.get("page")).toBe("2");
+    expect(params.get("per_page")).toBe("1");
+    expect(params.get("agent_id")).toBe("a1");
   });
 });
 

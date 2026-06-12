@@ -15,6 +15,10 @@ function optStr(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function num(value: unknown, fallback: number): number {
+  return typeof value === "number" ? value : fallback;
+}
+
 /**
  * The result of a completed registration. `clientId` is the `cb_…` handle used
  * to mint tokens; the private key lives on disk at `keyPath`.
@@ -117,5 +121,103 @@ export function parseTransaction(data: Json): Transaction {
     debtor: optStr(data.debtor),
     reference: optStr(data.reference),
     paymentIntentId: optStr(data.payment_intent_id),
+  };
+}
+
+/** One payment leg of an intent (payee + the matched transaction's state). */
+export interface PaymentInstruction {
+  amount: string;
+  currency: string;
+  status: string;
+  idempotencyKey: string | null;
+  creditorAccount: string | null;
+  creditorName: string | null;
+  debtorAccount: string | null;
+  debtorName: string | null;
+  reference: string | null;
+  transactionId: string | null;
+  transactionStatus: string | null;
+  executionError: string | null;
+}
+
+export function parsePaymentInstruction(data: Json): PaymentInstruction {
+  return {
+    amount: str(data.amount),
+    currency: str(data.currency),
+    status: str(data.status),
+    idempotencyKey: optStr(data.idempotency_key),
+    creditorAccount: optStr(data.creditor_account),
+    creditorName: optStr(data.creditor_name),
+    debtorAccount: optStr(data.debtor_account),
+    debtorName: optStr(data.debtor_name),
+    reference: optStr(data.reference),
+    transactionId: optStr(data.transaction_id),
+    transactionStatus: optStr(data.transaction_status),
+    executionError: optStr(data.execution_error),
+  };
+}
+
+/**
+ * A payment request created by an agent, with its per-leg breakdown.
+ * `approvalStatus` and `executionStatus` are the two status axes; the headline
+ * `totalAmount`/`currency` summarise the whole intent.
+ */
+export interface PaymentIntent {
+  id: string;
+  agentId: string;
+  approvalStatus: string;
+  executionStatus: string;
+  totalAmount: string;
+  currency: string;
+  instructionCount: number;
+  instructions: PaymentInstruction[];
+  agentName: string | null;
+  conversationId: string | null;
+  createdAt: string | null;
+  userRequestSummary: string | null;
+  decisionReason: string | null;
+  decidedAt: string | null;
+  alignmentOutcome: string | null;
+}
+
+export function parsePaymentIntent(data: Json): PaymentIntent {
+  const rawInstructions = Array.isArray(data.instructions) ? data.instructions : [];
+  return {
+    id: str(data.id),
+    agentId: str(data.agent_id),
+    approvalStatus: str(data.approval_status),
+    executionStatus: str(data.execution_status),
+    totalAmount: str(data.total_amount),
+    currency: str(data.currency),
+    instructionCount: num(data.instruction_count, rawInstructions.length),
+    instructions: rawInstructions.map((i) => parsePaymentInstruction((i ?? {}) as Json)),
+    agentName: optStr(data.agent_name),
+    conversationId: optStr(data.conversation_id),
+    createdAt: optStr(data.created_at),
+    userRequestSummary: optStr(data.user_request_summary),
+    decisionReason: optStr(data.decision_reason),
+    decidedAt: optStr(data.decided_at),
+    alignmentOutcome: optStr(data.alignment_outcome),
+  };
+}
+
+/**
+ * One page of a list endpoint plus the unpaginated `total`. `data` holds the
+ * rows on this page; `total` is the count across every page.
+ */
+export interface Page<T> {
+  data: T[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export function parsePage<T>(payload: Json, key: string, parseItem: (item: Json) => T): Page<T> {
+  const rows = Array.isArray(payload[key]) ? (payload[key] as Json[]) : [];
+  return {
+    data: rows.map((row) => parseItem((row ?? {}) as Json)),
+    total: num(payload.total, rows.length),
+    page: num(payload.page, 1),
+    perPage: num(payload.per_page, rows.length),
   };
 }

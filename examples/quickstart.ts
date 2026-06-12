@@ -42,8 +42,9 @@ async function main(): Promise<void> {
   }
   console.log();
 
-  const txns = await client.transactions.list({ limit: 10 });
-  for (const txn of txns) {
+  const page = await client.transactions.list({ perPage: 10 });
+  console.log(`${page.data.length} of ${page.total} transactions`);
+  for (const txn of page.data) {
     console.log(`${txn.date}  ${txn.amount} ${txn.currency}  -> ${txn.creditor}  (${txn.status})`);
   }
 }
