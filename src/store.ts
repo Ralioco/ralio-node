@@ -21,7 +21,19 @@ export const DEFAULT_BASE_URL = "https://api.ralio.co";
 
 /** Explicit value, else `RALIO_API_URL`, else production. Trailing slashes stripped. */
 export function resolveBaseUrl(explicit?: string): string {
-  return (explicit ?? env("RALIO_API_URL") ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  return stripTrailingSlashes(explicit ?? env("RALIO_API_URL") ?? DEFAULT_BASE_URL);
+}
+
+/**
+ * Strip trailing slashes. `/\/+$/` isn't anchored at the start, so the regex
+ * engine retries the greedy match from every offset — O(n²) backtracking on a
+ * run of slashes (CodeQL flags it as a polynomial-regex ReDoS). This linear
+ * scan is equivalent and can't blow up.
+ */
+export function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return value.slice(0, end);
 }
 
 export function configDir(): string {

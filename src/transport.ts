@@ -10,6 +10,7 @@
 import type { TokenManager } from "./auth.js";
 import { signDpopProof, type CryptoKey, type PublicJwk } from "./crypto.js";
 import { RalioAPIError, raiseForResponse } from "./errors.js";
+import { stripTrailingSlashes } from "./store.js";
 import { buildStreamEvent, type ChatStreamEvent } from "./types.js";
 
 export interface TransportOptions {
@@ -47,7 +48,7 @@ export class Transport implements TransportLike {
   private readonly requestTimeoutMs?: number;
 
   constructor(opts: TransportOptions) {
-    this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.baseUrl = stripTrailingSlashes(opts.baseUrl);
     this.tokens = opts.tokens;
     this.privateKey = opts.privateKey;
     this.publicJwk = opts.publicJwk;
