@@ -1,6 +1,6 @@
 /** Payment intents resource — read agent-created payment requests (`transactions:read`). */
 
-import type { Transport } from "../transport.js";
+import type { TransportLike } from "../transport.js";
 import { parsePage, parsePaymentIntent, type Page, type PaymentIntent } from "../types.js";
 
 export interface ListPaymentIntentsParams {
@@ -10,7 +10,7 @@ export interface ListPaymentIntentsParams {
 }
 
 export class PaymentIntentsResource {
-  constructor(private readonly transport: Transport) {}
+  constructor(private readonly transport: TransportLike) {}
 
   /**
    * List payment intents across the caller's agents, newest first.

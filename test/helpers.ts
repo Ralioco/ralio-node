@@ -74,6 +74,18 @@ export const tokenResponse = {
   scope: "agents:execute transactions:read",
 };
 
+/**
+ * Point the credential store at a fresh temp directory (and neutralize any
+ * ambient RALIO_* env config). Undone by `vi.unstubAllEnvs()`.
+ */
+export async function stubConfigDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "ralio-config-"));
+  vi.stubEnv("RALIO_CONFIG_DIR", dir);
+  vi.stubEnv("RALIO_API_URL", "");
+  vi.stubEnv("RALIO_REGISTRATION_TICKET", "");
+  return dir;
+}
+
 /** Write a fresh P-256 key to a temp file and return its path. */
 export async function writeKeyFile(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "ralio-test-"));
