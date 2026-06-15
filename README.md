@@ -11,9 +11,10 @@ It handles the machine-authentication path end to end — OAuth 2.1
 your integration can talk to an agent without hand-rolling JWT signing, proof
 generation, or token refresh.
 
-> **Scope.** This SDK targets autonomous integrations (CI jobs, agent hosts,
-> server-side callers). It authenticates as a **credential binding**, which can
-> hold the `agents:execute` and `transactions:read` scopes. Agent and binding
+> **Scope.** This SDK targets autonomous integrations such as agent hosts,
+> backend services, and other server-side automation. It authenticates as a
+> **credential binding**, which can hold the `agents:execute` and
+> `transactions:read` scopes. Agent and binding
 > management (`agents:config`) is a human-only operation in the console and is
 > intentionally not part of this SDK.
 
@@ -95,8 +96,7 @@ const client = new RalioClient();
 //   privateKeyPath: "ralio-key.pem",
 // });
 
-// One-shot chat — agentId is resolved automatically for a single-agent
-// credential; pass agentId explicitly to target one of several agents.
+// One-shot chat — uses the agent attached to the active credential.
 const reply = await client.chat.send({
   message: "What is my current balance?",
 });
@@ -137,6 +137,9 @@ using client = new RalioClient();
 Credentials load lazily on the first request; use `await RalioClient.create()`
 instead of `new RalioClient()` to load them eagerly and fail fast.
 
+The active credential determines which agent receives chat requests. To use a
+different agent, authenticate or register a new credential for that agent.
+
 ## Environment variables
 
 | Variable                    | Meaning                                                             |
@@ -173,7 +176,7 @@ All errors subclass `RalioError`:
 import { RalioPermissionError } from "@ralioco/sdk";
 
 try {
-  await client.chat.send({ agentId: "...", message: "..." });
+  await client.chat.send({ message: "..." });
 } catch (err) {
   if (err instanceof RalioPermissionError) {
     console.error("scope problem:", err.detail);

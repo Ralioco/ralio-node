@@ -1,6 +1,7 @@
 name: Release
 
-# Publishes to npm with provenance when a version tag is pushed.
+# The manual workflow creates a release commit + version tag, then publishes
+# that tag to npm with provenance. Manually pushed v* tags publish too.
 # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN is stored.
 # One-time setup: configure this repo + workflow as a trusted publisher for the
 # `@ralioco/sdk` package at https://www.npmjs.com/package/@ralioco/sdk/access.
@@ -10,6 +11,12 @@ name: Release
 # and the registry returns a 404), so we upgrade npm before publishing.
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional release version/tag, e.g. 0.2.0 or v1.0.0. Leave blank for next patch."
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -17,20 +24,111 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  create-release-tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install -g npm@latest # Keep npm behavior aligned with publish.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          current="$(node -p "require('./package.json').version")"
+          if [ -z "${INPUT_VERSION}" ]; then
+            version="$(node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); console.log(major + "." + minor + "." + (patch + 1));' "$current")"
+          else
+            version="${INPUT_VERSION#v}"
+          fi
+
+          node -e 'const version = process.argv[1]; if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) { console.error("Invalid release version: " + version); process.exit(1); }' "$version"
+
+          if [ "$version" = "$current" ]; then
+            echo "Release version $version is already the package version." >&2
+            exit 1
+          fi
+
+          tag="v$version"
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists." >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Bump package version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+      - name: Commit and push release tag
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add package.json package-lock.json
+          git commit -m "chore(release): $RELEASE_VERSION"
+          git tag "$RELEASE_TAG"
+          git push origin HEAD:main
+          git push origin "$RELEASE_TAG"
+
   publish:
+    needs: create-release-tag
+    if: always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && needs.create-release-tag.result == 'success'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # required for npm provenance / Trusted Publishing
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && needs.create-release-tag.outputs.tag || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
       - run: npm install -g npm@latest # OIDC Trusted Publishing needs npm >= 11.5.1
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && needs.create-release-tag.outputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "Tag $RELEASE_TAG does not match package.json version $package_version." >&2
+            exit 1
+          fi
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
