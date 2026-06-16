@@ -41,8 +41,7 @@ private key controlled by your integration:
    locally and submits the public key with the ticket; the binding is active
    as soon as the server responds — no approval step, no polling. The owner
    gets an email receipt with a revoke link. The credentials are persisted to
-   `~/.ralio/` — the same store the `ralio` CLI uses, so `register()` and
-   `ralio auth agent` are interchangeable.
+   the local Ralio credential store.
 3. From then on, `RalioClient` mints and refreshes DPoP-bound access tokens
    transparently and signs a fresh proof for every request.
 
@@ -87,7 +86,7 @@ console.log(binding.clientId); // cb_... — store this alongside the key
 ```ts
 import { RalioClient } from "@ralioco/sdk";
 
-// Zero-config: reads the credentials persisted by register() / `ralio auth agent`.
+// Zero-config: reads the credentials persisted by register().
 const client = new RalioClient();
 
 // Or manage credentials yourself:
@@ -140,72 +139,16 @@ instead of `new RalioClient()` to load them eagerly and fail fast.
 The active credential determines which agent receives chat requests. To use a
 different agent, authenticate or register a new credential for that agent.
 
-## Credential stores and clustered clients
-
-The default setup reads credentials persisted by `register()` or
-`ralio auth agent`. You can also pass the local PEM file directly with
-`clientId` + `privateKeyPath`, or provide a custom `CredentialStore`.
-
-For clustered agents, run activation once, then let every instance use the same
-stable `client_id` and private key. Each running instance should keep its own
-refresh token family. Sharing one mutable refresh token across concurrent
-instances can create rotation races: one instance rotates the token, another
-later presents the old token, and the server treats that as reuse for that
-family.
-
-Provide a shared source for the stable identity material, and key refresh-token
-storage by instance:
-
-```ts
-import { RalioClient, type CredentialStore } from "@ralioco/sdk";
-
-const instanceId = process.env.RALIO_INSTANCE_ID ?? process.env.HOSTNAME ?? "worker-1";
-
-const store: CredentialStore = {
-  async load() {
-    return {
-      clientId: await secrets.get("ralio/client_id"),
-      privateKeyPem: await secrets.get("ralio/private_key_pem"),
-      refreshToken: await state.get(`ralio/refresh/${instanceId}`),
-    };
-  },
-  async saveRefreshToken(refreshToken) {
-    await state.set(`ralio/refresh/${instanceId}`, refreshToken);
-  },
-};
-
-const client = await RalioClient.create({ credentialStore: store });
-```
-
-If you want local-file refresh-token persistence, pass a distinct
-`refreshTokenPath` for each running instance. With zero-config identity material:
-
-```ts
-const client = await RalioClient.create({
-  refreshTokenPath: `/var/lib/ralio/${process.env.HOSTNAME}.refresh-token`,
-});
-```
-
-Or with an explicit local PEM key:
-
-```ts
-const client = await RalioClient.create({
-  clientId: "cb_...",
-  privateKeyPath: "ralio-key.pem",
-  refreshTokenPath: `/var/lib/ralio/${process.env.HOSTNAME}.refresh-token`,
-});
-```
-
-Credential-wide revocation in the Ralio console still revokes all token families
-for the shared `client_id`.
+For custom credential stores and clustered deployments, see
+[Credential stores](docs/credential-stores.md).
 
 ## Environment variables
 
-| Variable                    | Meaning                                                             |
-| --------------------------- | ------------------------------------------------------------------- |
-| `RALIO_REGISTRATION_TICKET` | Default ticket for `register()` — same variable the CLI reads       |
-| `RALIO_API_URL`             | API origin (default `https://api.ralio.co`)                         |
-| `RALIO_CONFIG_DIR`          | Credential store location (default `~/.ralio`, shared with the CLI) |
+| Variable                    | Meaning                                        |
+| --------------------------- | ---------------------------------------------- |
+| `RALIO_REGISTRATION_TICKET` | Default ticket for `register()`                |
+| `RALIO_API_URL`             | API origin (default `https://api.ralio.co`)    |
+| `RALIO_CONFIG_DIR`          | Credential store location (default `~/.ralio`) |
 
 ## Payments
 
