@@ -8,9 +8,9 @@
  * a revoke link. The private key never leaves your environment.
  *
  * By default activation mints the first access token and persists credentials
- * to `~/.ralio/` (same store as `ralio auth agent`), so a no-argument
- * `new RalioClient()` works from then on. Pass a writable credential store to
- * persist identity material somewhere else.
+ * to the local Ralio credential store, so a no-argument `new RalioClient()`
+ * works from then on. Pass a writable credential store to persist identity
+ * material somewhere else.
  */
 
 import { access } from "node:fs/promises";
@@ -40,8 +40,7 @@ export { DEFAULT_BASE_URL } from "./store.js";
 export interface RegisterOptions {
   /**
    * Registration ticket (`ralio-reg-...`) from the console. Defaults to the
-   * `RALIO_REGISTRATION_TICKET` environment variable — the same one the CLI
-   * and Python SDK read.
+   * `RALIO_REGISTRATION_TICKET` environment variable.
    */
   ticket?: string;
   /**

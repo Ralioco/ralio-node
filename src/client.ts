@@ -38,7 +38,7 @@ export interface RalioClientLocalCredentialOptions extends RalioClientBaseOption
   /**
    * The `cb_...` client id. Optional: when omitted (together with
    * `privateKeyPath`), the client reads the credentials persisted by
-   * {@link register} or `ralio auth agent`.
+   * {@link register}.
    */
   clientId?: string;
   /** Path to the PKCS8 PEM private key written by {@link register}. */
@@ -221,8 +221,7 @@ class PersistedCredentialStore implements CredentialStore {
     if (!clientId || !keyPath) {
       throw new RalioConfigError(
         `No Ralio credentials found at ${credentialsPath()}. Run register() ` +
-          "(or `ralio auth agent`) on this host first, or pass clientId and " +
-          "privateKeyPath explicitly.",
+          "on this host first, or pass clientId and privateKeyPath explicitly.",
       );
     }
 
