@@ -20,6 +20,10 @@ export interface TokenManagerOptions {
   kid: string;
   tokenUrl: string;
   scopes?: string[];
+  /** Current refresh token for this SDK instance, if already known. */
+  refreshToken?: string | null;
+  /** Persist refresh-token rotation for this SDK instance. */
+  saveRefreshToken?: (refreshToken: string | null) => Promise<void>;
   /** Refresh this many seconds before the token actually expires. */
   refreshLeewaySeconds?: number;
 }
@@ -31,6 +35,7 @@ export class TokenManager {
   private readonly tokenUrl: string;
   private readonly scopes?: string[];
   private readonly leewayMs: number;
+  private readonly saveRefreshToken?: (refreshToken: string | null) => Promise<void>;
 
   private accessTokenValue: string | null = null;
   private refreshTokenValue: string | null = null;
@@ -46,6 +51,8 @@ export class TokenManager {
     this.kid = opts.kid;
     this.tokenUrl = opts.tokenUrl;
     this.scopes = opts.scopes;
+    this.refreshTokenValue = opts.refreshToken ?? null;
+    this.saveRefreshToken = opts.saveRefreshToken;
     this.leewayMs = (opts.refreshLeewaySeconds ?? 300) * 1000;
   }
 
@@ -89,6 +96,7 @@ export class TokenManager {
         // Refresh chains can be revoked or expired; fall back to a fresh
         // client-assertion mint, which always works while the binding is active.
         this.refreshTokenValue = null;
+        await this.persistRefreshToken(null);
       }
     }
     return this.mint();
@@ -133,8 +141,15 @@ export class TokenManager {
       expires_in?: number;
     };
     this.accessTokenValue = body.access_token;
-    this.refreshTokenValue = body.refresh_token ?? this.refreshTokenValue;
+    if (body.refresh_token && body.refresh_token !== this.refreshTokenValue) {
+      this.refreshTokenValue = body.refresh_token;
+      await this.persistRefreshToken(this.refreshTokenValue);
+    }
     this.expiresAtMs = Date.now() + (body.expires_in ?? 1800) * 1000;
     return this.accessTokenValue;
+  }
+
+  private async persistRefreshToken(refreshToken: string | null): Promise<void> {
+    if (this.saveRefreshToken) await this.saveRefreshToken(refreshToken);
   }
 }

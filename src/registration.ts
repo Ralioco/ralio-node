@@ -2,16 +2,15 @@
  * One-time credential-binding registration (the operator side).
  *
  * The owner mints a `ralio-reg-…` ticket in the console. The operator calls
- * {@link register} on the agent host: it generates a P-256 keypair locally,
- * submits the public key with the ticket, and polls until the owner approves
- * the binding in the console. The private key never leaves the host.
+ * {@link register}: it generates a P-256 keypair locally, submits the public
+ * key with the ticket, and polls until the owner approves the binding in the
+ * console. The private key never leaves your environment.
  */
 
-import { randomBytes } from "node:crypto";
-import { open, rename, rm, access } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access } from "node:fs/promises";
 
 import { generateKeypair, privateKeyToPem, type PublicJwk } from "./crypto.js";
+import { LocalFileCredentialStore, type WritableCredentialStore } from "./credentials.js";
 import { RalioRegistrationError, raiseForResponse } from "./errors.js";
 import type { CredentialBinding } from "./types.js";
 
@@ -20,7 +19,10 @@ const TERMINAL = new Set(["active", "rejected", "expired"]);
 
 export interface RegisterOptions {
   ticket: string;
-  privateKeyPath: string;
+  /** Path to write the PKCS8 PEM private key. Preserved for the default local-file flow. */
+  privateKeyPath?: string;
+  /** Optional store for generated identity material. */
+  credentialStore?: WritableCredentialStore;
   baseUrl?: string;
   requestedScopes?: string[];
   clientMetadata?: Record<string, unknown>;
@@ -44,20 +46,39 @@ export async function register(opts: RegisterOptions): Promise<CredentialBinding
   const base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const pollIntervalMs = opts.pollIntervalMs ?? 3000;
   const timeoutMs = opts.timeoutMs ?? 900_000;
+  const credentialStore = storeFromOptions(opts);
 
-  if (!opts.overwrite && (await exists(opts.privateKeyPath))) {
+  if (
+    !opts.credentialStore &&
+    opts.privateKeyPath &&
+    !opts.overwrite &&
+    (await exists(opts.privateKeyPath))
+  ) {
     throw new RalioRegistrationError(
       `${opts.privateKeyPath} already exists; pass overwrite: true to replace it`,
     );
   }
 
   const { privateKey, publicJwk, kid } = await generateKeypair();
-  await savePrivateKey(opts.privateKeyPath, await privateKeyToPem(privateKey));
+  const privateKeyPem = await privateKeyToPem(privateKey);
+  await credentialStore.saveCredentials({ privateKeyPem, publicJwk, kid });
 
   const pollToken = await submit(base, opts, publicJwk, kid);
   const clientId = await poll(base, pollToken, pollIntervalMs, timeoutMs);
+  await credentialStore.saveCredentials({ clientId, privateKeyPem, publicJwk, kid });
 
   return { clientId, scopes: opts.requestedScopes ?? [] };
+}
+
+function storeFromOptions(opts: RegisterOptions): WritableCredentialStore {
+  if (opts.credentialStore) return opts.credentialStore;
+  if (!opts.privateKeyPath) {
+    throw new RalioRegistrationError("privateKeyPath or credentialStore is required");
+  }
+  return new LocalFileCredentialStore({
+    privateKeyPath: opts.privateKeyPath,
+    overwrite: opts.overwrite,
+  });
 }
 
 async function submit(
@@ -130,22 +151,6 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Write `pem` at `path`, mode 0600, atomically (temp file + rename). */
-async function savePrivateKey(path: string, pem: string): Promise<void> {
-  const dir = dirname(path);
-  const tmp = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
-  const handle = await open(tmp, "wx", 0o600);
-  try {
-    await handle.writeFile(pem);
-    await handle.close();
-    await rename(tmp, path);
-  } catch (err) {
-    await handle.close().catch(() => undefined);
-    await rm(tmp, { force: true });
-    throw err;
   }
 }
 

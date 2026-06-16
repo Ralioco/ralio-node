@@ -1,9 +1,13 @@
 /** The top-level {@link RalioClient}. */
 
-import { readFile } from "node:fs/promises";
-
 import { TokenManager } from "./auth.js";
-import { loadPrivateKey } from "./crypto.js";
+import { loadPrivateJwk, loadPrivateKey, type KeyMaterial, type PublicJwk } from "./crypto.js";
+import {
+  LocalFileCredentialStore,
+  type CredentialStore,
+  type StoredCredentials,
+} from "./credentials.js";
+import { RalioConfigError } from "./errors.js";
 import { DEFAULT_BASE_URL } from "./registration.js";
 import {
   AgentsResource,
@@ -13,15 +17,31 @@ import {
 } from "./resources/index.js";
 import { Transport } from "./transport.js";
 
-export interface RalioClientOptions {
-  clientId: string;
-  /** Path to the PKCS8 PEM private key written by {@link register}. */
-  privateKeyPath: string;
+interface RalioClientBaseOptions {
   baseUrl?: string;
   scopes?: string[];
   /** Per-request timeout in ms (default 30000). Streams are not bounded. */
   timeoutMs?: number;
 }
+
+export interface RalioClientLocalCredentialOptions extends RalioClientBaseOptions {
+  clientId: string;
+  /** Path to the PKCS8 PEM private key written by {@link register}. */
+  privateKeyPath: string;
+  /** Optional per-instance refresh-token file. Omit to keep the token in memory. */
+  refreshTokenPath?: string;
+  credentialStore?: never;
+}
+
+export interface RalioClientStoreOptions extends RalioClientBaseOptions {
+  /** Custom credential store for identity material and this instance's refresh token. */
+  credentialStore: CredentialStore;
+  clientId?: never;
+  privateKeyPath?: never;
+  refreshTokenPath?: never;
+}
+
+export type RalioClientOptions = RalioClientLocalCredentialOptions | RalioClientStoreOptions;
 
 /**
  * Client for the Ralio API, authenticated via a credential binding (OAuth 2.1
@@ -53,15 +73,19 @@ export class RalioClient {
   /** Load the private key and build a ready-to-use client. */
   static async create(opts: RalioClientOptions): Promise<RalioClient> {
     const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    const pem = await readFile(opts.privateKeyPath, "utf8");
-    const { privateKey, publicJwk, kid } = await loadPrivateKey(pem);
+    const credentialStore = storeFromOptions(opts);
+    const credentials = await credentialStore.load();
+    const { clientId, keyMaterial } = await loadCredentials(credentials);
+    const { privateKey, publicJwk, kid } = keyMaterial;
 
     const tokens = new TokenManager({
-      clientId: opts.clientId,
+      clientId,
       privateKey,
       kid,
       tokenUrl: `${baseUrl}/oauth/token`,
       scopes: opts.scopes,
+      refreshToken: credentials.refreshToken ?? null,
+      saveRefreshToken: (refreshToken) => credentialStore.saveRefreshToken(refreshToken),
     });
     const transport = new Transport({
       baseUrl,
@@ -84,4 +108,40 @@ export class RalioClient {
   [Symbol.dispose](): void {
     this.close();
   }
+}
+
+function storeFromOptions(opts: RalioClientOptions): CredentialStore {
+  if ("credentialStore" in opts && opts.credentialStore) return opts.credentialStore;
+  return new LocalFileCredentialStore({
+    clientId: opts.clientId,
+    privateKeyPath: opts.privateKeyPath,
+    refreshTokenPath: opts.refreshTokenPath,
+  });
+}
+
+async function loadCredentials(
+  credentials: StoredCredentials,
+): Promise<{ clientId: string; keyMaterial: KeyMaterial }> {
+  if (!credentials.clientId) {
+    throw new RalioConfigError("credential store did not provide client_id");
+  }
+  const keyMaterial = credentials.privateKeyPem
+    ? await loadPrivateKey(credentials.privateKeyPem)
+    : credentials.privateJwk
+      ? await loadPrivateJwk(credentials.privateJwk)
+      : null;
+  if (!keyMaterial) {
+    throw new RalioConfigError("credential store did not provide private key material");
+  }
+  if (credentials.publicJwk && !samePublicJwk(credentials.publicJwk, keyMaterial.publicJwk)) {
+    throw new RalioConfigError("stored public JWK does not match the private key");
+  }
+  if (credentials.kid && credentials.kid !== keyMaterial.kid) {
+    throw new RalioConfigError("stored key id does not match the private key");
+  }
+  return { clientId: credentials.clientId, keyMaterial };
+}
+
+function samePublicJwk(a: PublicJwk, b: PublicJwk): boolean {
+  return a.crv === b.crv && a.kty === b.kty && a.x === b.x && a.y === b.y;
 }

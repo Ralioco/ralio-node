@@ -29,8 +29,8 @@ bundled.
 
 ## Authentication model
 
-Ralio's machine path has no shared secrets. Each credential is a P-256 private
-key that lives on exactly one host:
+Ralio's machine path has no shared client secret. Each credential is a P-256
+private key controlled by your integration:
 
 1. The **owner** mints a one-time registration ticket in the console
    (**Settings → Credentials → New credential**), choosing the target agent and
@@ -46,8 +46,8 @@ for the protocol details.
 
 ## Register once
 
-Run this on the host where the integration will live, after the owner sends you
-a ticket:
+Run this where the integration's stable credential should be created, after the
+owner sends you a ticket:
 
 ```ts
 import { register } from "@ralioco/sdk";
@@ -63,7 +63,7 @@ console.log(binding.clientId); // cb_... — store this alongside the key
 
 `register()` resolves once the owner approves (or rejects with a
 `RalioRegistrationError` if the binding is rejected / expires / times out). The
-private key never leaves the host.
+private key never leaves your environment.
 
 ## Use the client
 
@@ -113,6 +113,57 @@ automatically:
 ```ts
 using client = await RalioClient.create({ clientId: "cb_...", privateKeyPath: "ralio-key.pem" });
 ```
+
+## Credential stores and clustered clients
+
+The default setup still reads the local PEM file you pass as `privateKeyPath`.
+Refresh tokens are per `RalioClient` instance by default and are kept in memory
+unless you configure a refresh-token file or custom store.
+
+For clustered agents, run activation once, then let every instance use the same
+stable `client_id` and private key. Each running instance should keep its own
+refresh token family. Sharing one mutable refresh token across concurrent
+instances can create rotation races: one instance rotates the token, another
+later presents the old token, and the server treats that as reuse for that
+family.
+
+Provide a shared source for the stable identity material, and key refresh-token
+storage by instance:
+
+```ts
+import { RalioClient, type CredentialStore } from "@ralioco/sdk";
+
+const instanceId = process.env.RALIO_INSTANCE_ID ?? process.env.HOSTNAME ?? "worker-1";
+
+const store: CredentialStore = {
+  async load() {
+    return {
+      clientId: await secrets.get("ralio/client_id"),
+      privateKeyPem: await secrets.get("ralio/private_key_pem"),
+      refreshToken: await state.get(`ralio/refresh/${instanceId}`),
+    };
+  },
+  async saveRefreshToken(refreshToken) {
+    await state.set(`ralio/refresh/${instanceId}`, refreshToken);
+  },
+};
+
+const client = await RalioClient.create({ credentialStore: store });
+```
+
+If you want local-file refresh-token persistence, pass a distinct
+`refreshTokenPath` for each running instance:
+
+```ts
+const client = await RalioClient.create({
+  clientId: "cb_...",
+  privateKeyPath: "ralio-key.pem",
+  refreshTokenPath: `/var/lib/ralio/${process.env.HOSTNAME}.refresh-token`,
+});
+```
+
+Credential-wide revocation in the Ralio console still revokes all token families
+for the shared `client_id`.
 
 ## Payments
 
