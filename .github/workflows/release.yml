@@ -1,7 +1,11 @@
 name: Release
 
-# Publishes to npm with provenance when a version tag is pushed.
-# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN is stored.
+# Publishes to npm via Trusted Publishing (OIDC) from a manual release run.
+# The workflow increments the patch version from the latest release tag by
+# default, or uses the provided release tag/version for minor and major releases.
+# It creates a release-only version commit when needed, tags that commit, and
+# publishes the package. It never pushes directly to the protected main branch.
+# No API token is stored — npm verifies the workflow identity directly.
 # One-time setup: configure this repo + workflow as a trusted publisher for the
 # `@ralioco/sdk` package at https://www.npmjs.com/package/@ralioco/sdk/access.
 #
@@ -10,30 +14,178 @@ name: Release
 # and the registry returns a 404), so we upgrade npm before publishing.
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional release tag/version, e.g. v0.2.0 or 0.2.0. Leave blank to increment patch."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write # required for npm provenance / Trusted Publishing
     steps:
+      - name: Require main branch
+        if: github.ref_name != 'main'
+        run: |
+          echo "Release workflow must be run from main; selected ${GITHUB_REF_NAME}."
+          exit 1
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
       - run: npm install -g npm@latest # OIDC Trusted Publishing needs npm >= 11.5.1
+      - name: Resolve release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const cp = require("node:child_process");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const currentMatch = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(pkg.version);
+          if (!currentMatch) {
+            console.error(`Could not find a semantic version in package.json: ${pkg.version}`);
+            process.exit(1);
+          }
+
+          cp.execFileSync("git", ["fetch", "--tags", "origin"], { stdio: "inherit" });
+
+          const parseVersion = (version) => {
+            const match = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(version);
+            return match ? match.slice(1).map(Number) : null;
+          };
+          const compareVersions = (a, b) => {
+            for (let i = 0; i < 3; i += 1) {
+              if (a[i] !== b[i]) return a[i] - b[i];
+            }
+            return 0;
+          };
+          const formatVersion = (version) => version.join(".");
+
+          const projectVersion = currentMatch.slice(1).map(Number);
+          const requested = (process.env.REQUESTED_VERSION || "").trim().replace(/^v/, "");
+          const existingVersions = cp
+            .execFileSync("git", ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"], { encoding: "utf8" })
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((tag) => parseVersion(tag.replace(/^v/, "")))
+            .filter(Boolean);
+          const latestReleased = existingVersions.reduce(
+            (latest, version) => (!latest || compareVersions(version, latest) > 0 ? version : latest),
+            null,
+          );
+
+          let versionParts;
+          if (requested) {
+            versionParts = parseVersion(requested);
+            if (!versionParts) {
+              console.error("Release tag/version must look like v1.2.3 or 1.2.3");
+              process.exit(1);
+            }
+          } else {
+            const baseVersion =
+              latestReleased && compareVersions(latestReleased, projectVersion) > 0
+                ? latestReleased
+                : projectVersion;
+            versionParts = [baseVersion[0], baseVersion[1], baseVersion[2] + 1];
+          }
+
+          if (compareVersions(versionParts, projectVersion) < 0) {
+            console.error(
+              `Release version ${formatVersion(versionParts)} must not be lower than ${formatVersion(
+                projectVersion,
+              )}`,
+            );
+            process.exit(1);
+          }
+
+          const version = formatVersion(versionParts);
+          const tag = `v${version}`;
+          const tagLookup = cp.spawnSync("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`], {
+            encoding: "utf8",
+          });
+          const tagExists = tagLookup.status === 0;
+          if (![0, 1].includes(tagLookup.status)) {
+            console.error(`Could not check whether tag ${tag} exists`);
+            process.exit(tagLookup.status);
+          }
+
+          let commitNeeded;
+          let tagNeeded;
+          if (tagExists) {
+            if (!requested) {
+              console.error(`Calculated release tag ${tag} already exists`);
+              process.exit(1);
+            }
+
+            cp.execFileSync("git", ["checkout", "--detach", tag], { stdio: "inherit" });
+            const taggedPackage = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (taggedPackage.version !== version) {
+              console.error(`Tag ${tag} contains package.json version ${taggedPackage.version}, not ${version}`);
+              process.exit(1);
+            }
+
+            commitNeeded = false;
+            tagNeeded = false;
+          } else {
+            if (latestReleased && compareVersions(versionParts, latestReleased) <= 0) {
+              console.error(
+                `Release version ${version} must be greater than latest tag v${formatVersion(latestReleased)}`,
+              );
+              process.exit(1);
+            }
+
+            commitNeeded = compareVersions(versionParts, projectVersion) !== 0;
+            tagNeeded = true;
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            [
+              `version=${version}`,
+              `tag=${tag}`,
+              `commit_needed=${commitNeeded}`,
+              `tag_needed=${tagNeeded}`,
+              "",
+            ].join("\n"),
+          );
+          NODE
+      - name: Commit release version
+        if: steps.release.outputs.commit_needed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          npm version "${{ steps.release.outputs.version }}" --no-git-tag-version
+          git add package.json package-lock.json
+          git commit -m "release: ${{ steps.release.outputs.version }}"
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Create release tag
+        if: steps.release.outputs.tag_needed == 'true'
+        run: git tag "${{ steps.release.outputs.tag }}"
+      - name: Push release tag
+        if: steps.release.outputs.tag_needed == 'true'
+        run: git push origin "refs/tags/${{ steps.release.outputs.tag }}"
       - run: npm publish --access public --provenance

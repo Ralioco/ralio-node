@@ -6,7 +6,7 @@
  * - P-256 (ES256) is the only curve the token endpoint accepts.
  * - The public JWK is the canonical RFC 7638 form (`crv`/`kty`/`x`/`y` only),
  *   so the thumbprint computed here matches the `cnf.jkt` the server stamps on
- *   the access token and the fingerprint the owner confirms.
+ *   the access token and the fingerprint the registration endpoint echoes.
  * - Client assertions follow RFC 7521/7523; DPoP proofs follow RFC 9449.
  */
 

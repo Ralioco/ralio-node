@@ -1,10 +1,10 @@
 /** Agents resource — read the agents this credential can address (read-only). */
 
-import type { Transport } from "../transport.js";
+import type { TransportLike } from "../transport.js";
 import { parseAgent, type Agent } from "../types.js";
 
 export class AgentsResource {
-  constructor(private readonly transport: Transport) {}
+  constructor(private readonly transport: TransportLike) {}
 
   /**
    * List the agents the caller can address.

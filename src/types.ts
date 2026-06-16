@@ -21,11 +21,12 @@ function num(value: unknown, fallback: number): number {
 
 /**
  * The result of a completed registration. `clientId` is the `cb_…` handle used
- * to mint tokens; the private key lives on disk.
+ * to mint tokens; the private key lives on disk at `keyPath`.
  */
 export interface CredentialBinding {
   clientId: string;
   scopes: string[];
+  keyPath: string;
 }
 
 /** A payment agent the caller can address. */
