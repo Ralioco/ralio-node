@@ -30,8 +30,8 @@ bundled.
 
 ## Authentication model
 
-Ralio's machine path has no shared secrets. Each credential is a P-256 private
-key that lives on exactly one host:
+Ralio's machine path has no shared client secret. Each credential is a P-256
+private key controlled by your integration:
 
 1. The **owner** mints a one-time registration ticket in the console
    (**Settings → Credentials → New credential**), choosing the target agent and
@@ -41,8 +41,7 @@ key that lives on exactly one host:
    locally and submits the public key with the ticket; the binding is active
    as soon as the server responds — no approval step, no polling. The owner
    gets an email receipt with a revoke link. The credentials are persisted to
-   `~/.ralio/` — the same store the `ralio` CLI uses, so `register()` and
-   `ralio auth agent` are interchangeable.
+   the local Ralio credential store.
 3. From then on, `RalioClient` mints and refreshes DPoP-bound access tokens
    transparently and signs a fresh proof for every request.
 
@@ -87,7 +86,7 @@ console.log(binding.clientId); // cb_... — store this alongside the key
 ```ts
 import { RalioClient } from "@ralioco/sdk";
 
-// Zero-config: reads the credentials persisted by register() / `ralio auth agent`.
+// Zero-config: reads the credentials persisted by register().
 const client = new RalioClient();
 
 // Or manage credentials yourself:
@@ -140,13 +139,16 @@ instead of `new RalioClient()` to load them eagerly and fail fast.
 The active credential determines which agent receives chat requests. To use a
 different agent, authenticate or register a new credential for that agent.
 
+For custom credential stores and clustered deployments, see
+[Credential stores](docs/credential-stores.md).
+
 ## Environment variables
 
-| Variable                    | Meaning                                                             |
-| --------------------------- | ------------------------------------------------------------------- |
-| `RALIO_REGISTRATION_TICKET` | Default ticket for `register()` — same variable the CLI reads       |
-| `RALIO_API_URL`             | API origin (default `https://api.ralio.co`)                         |
-| `RALIO_CONFIG_DIR`          | Credential store location (default `~/.ralio`, shared with the CLI) |
+| Variable                    | Meaning                                        |
+| --------------------------- | ---------------------------------------------- |
+| `RALIO_REGISTRATION_TICKET` | Default ticket for `register()`                |
+| `RALIO_API_URL`             | API origin (default `https://api.ralio.co`)    |
+| `RALIO_CONFIG_DIR`          | Credential store location (default `~/.ralio`) |
 
 ## Payments
 

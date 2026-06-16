@@ -16,8 +16,10 @@ import {
   exportPKCS8,
   exportJWK,
   importPKCS8,
+  importJWK,
   generateKeyPair as joseGenerateKeyPair,
   calculateJwkThumbprint,
+  type JWK_EC_Private,
 } from "jose";
 
 /**
@@ -39,6 +41,15 @@ export interface PublicJwk {
   x: string;
   y: string;
 }
+
+/** Private P-256 JWK form accepted by custom credential stores. */
+export type PrivateJwk = JWK_EC_Private & {
+  crv: "P-256";
+  kty: "EC";
+  x: string;
+  y: string;
+  d: string;
+};
 
 /** A loaded credential: the private key plus its canonical public JWK and kid. */
 export interface KeyMaterial {
@@ -94,6 +105,23 @@ export async function loadPrivateKey(pem: string): Promise<KeyMaterial> {
       `Ralio credentials require a P-256 (EC) private key: ${(err as Error).message}`,
       { cause: err },
     );
+  }
+  return fromPrivateKey(key);
+}
+
+/** Load a private P-256 JWK, returning full key material. */
+export async function loadPrivateJwk(jwk: PrivateJwk): Promise<KeyMaterial> {
+  let key: CryptoKey | Uint8Array;
+  try {
+    key = await importJWK(jwk, "ES256", { extractable: true });
+  } catch (err) {
+    throw new Error(
+      `Ralio credentials require a P-256 (EC) private JWK: ${(err as Error).message}`,
+      { cause: err },
+    );
+  }
+  if (key instanceof Uint8Array) {
+    throw new Error("Ralio credentials require an asymmetric P-256 (EC) private JWK");
   }
   return fromPrivateKey(key);
 }

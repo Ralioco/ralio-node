@@ -1,8 +1,21 @@
 /** Official TypeScript SDK for the Ralio agentic payment API. */
 
-export { RalioClient, type RalioClientOptions } from "./client.js";
+export {
+  RalioClient,
+  type RalioClientLocalCredentialOptions,
+  type RalioClientOptions,
+  type RalioClientStoreOptions,
+} from "./client.js";
+export { LocalFileCredentialStore } from "./credentials.js";
 export { register, DEFAULT_BASE_URL, type RegisterOptions } from "./registration.js";
 
+export type { PrivateJwk, PublicJwk } from "./crypto.js";
+export type {
+  CredentialStore,
+  LocalFileCredentialStoreOptions,
+  StoredCredentials,
+  WritableCredentialStore,
+} from "./credentials.js";
 export type {
   Agent,
   ChatReply,

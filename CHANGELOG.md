@@ -5,20 +5,18 @@
 - Zero-friction onboarding: `register()` now takes no required arguments and
   `new RalioClient()` works with no configuration at all.
   - `register()` defaults its ticket to the `RALIO_REGISTRATION_TICKET`
-    environment variable (the same one the CLI reads) and throws a
-    `RalioConfigError` when neither is set.
+    environment variable and throws a `RalioConfigError` when neither is set.
   - On activation, `register()` mints the first access token and persists the
-    credentials to `~/.ralio/` — the same store the CLI uses, so
-    `register()` and `ralio auth agent` are interchangeable. The private key
-    defaults to `~/.ralio/keys/<jkt>.pem`; `privateKeyPath` still overrides.
+    credentials to the local Ralio credential store. The private key defaults
+    to `~/.ralio/keys/<jkt>.pem`; `privateKeyPath` still overrides.
   - `RalioClient` gained a public synchronous constructor. With no arguments
     it reads the persisted credentials on first request and mints/refreshes
     tokens transparently — no copy-pasting `clientId`. `RalioClient.create()`
     remains for eager, fail-fast credential loading.
   - `CredentialBinding` gained `keyPath`; `binding.scopes` now reflects the
     granted token scope rather than echoing `requestedScopes`.
-  - New env vars: `RALIO_API_URL` (API origin override, matching the CLI) and
-    `RALIO_CONFIG_DIR` (credential store location, default `~/.ralio`).
+  - New env vars: `RALIO_API_URL` (API origin override) and `RALIO_CONFIG_DIR`
+    (credential store location, default `~/.ralio`).
   - A key bound to nothing is removed when a registration fails.
 - Synchronous activation (server PR #1182): the binding is active as soon as
   `POST /api/credential-bindings/registrations` returns — owner consent

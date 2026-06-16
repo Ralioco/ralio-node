@@ -1,9 +1,14 @@
 /** The top-level {@link RalioClient}. */
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 
 import { TokenManager } from "./auth.js";
-import { loadPrivateKey } from "./crypto.js";
+import { loadPrivateJwk, loadPrivateKey, type KeyMaterial, type PublicJwk } from "./crypto.js";
+import {
+  LocalFileCredentialStore,
+  type CredentialStore,
+  type StoredCredentials,
+} from "./credentials.js";
 import { RalioConfigError } from "./errors.js";
 import {
   AgentsResource,
@@ -11,25 +16,47 @@ import {
   PaymentIntentsResource,
   TransactionsResource,
 } from "./resources/index.js";
-import { credentialsPath, keyPathFor, loadCredentials, resolveBaseUrl } from "./store.js";
+import {
+  credentialsPath,
+  keyPathFor,
+  loadCredentials as loadPersistedCredentials,
+  resolveBaseUrl,
+  saveCredentials as savePersistedCredentials,
+} from "./store.js";
 import { Transport, type RequestOptions, type TransportLike } from "./transport.js";
 import type { ChatStreamEvent } from "./types.js";
 
-export interface RalioClientOptions {
-  /**
-   * The `cb_…` client id. Optional: when omitted (together with
-   * `privateKeyPath`), the client reads the credentials persisted by
-   * {@link register} or `ralio auth agent`.
-   */
-  clientId?: string;
-  /** Path to the PKCS8 PEM private key written by {@link register}. */
-  privateKeyPath?: string;
+interface RalioClientBaseOptions {
   /** API origin. Defaults to `RALIO_API_URL`, else production. */
   baseUrl?: string;
   scopes?: string[];
   /** Per-request timeout in ms (default 30000). Streams are not bounded. */
   timeoutMs?: number;
 }
+
+export interface RalioClientLocalCredentialOptions extends RalioClientBaseOptions {
+  /**
+   * The `cb_...` client id. Optional: when omitted (together with
+   * `privateKeyPath`), the client reads the credentials persisted by
+   * {@link register}.
+   */
+  clientId?: string;
+  /** Path to the PKCS8 PEM private key written by {@link register}. */
+  privateKeyPath?: string;
+  /** Optional per-instance refresh-token file. Omit to use the selected store's default. */
+  refreshTokenPath?: string;
+  credentialStore?: never;
+}
+
+export interface RalioClientStoreOptions extends RalioClientBaseOptions {
+  /** Custom credential store for identity material and this instance's refresh token. */
+  credentialStore: CredentialStore;
+  clientId?: never;
+  privateKeyPath?: never;
+  refreshTokenPath?: never;
+}
+
+export type RalioClientOptions = RalioClientLocalCredentialOptions | RalioClientStoreOptions;
 
 /**
  * Client for the Ralio API, authenticated via a credential binding (OAuth 2.1
@@ -42,9 +69,9 @@ export interface RalioClientOptions {
  * const reply = await client.chat.send({ message: "What's my balance?" });
  * ```
  *
- * To manage credentials yourself, pass `clientId` + `privateKeyPath`.
- * Credentials load on the first request; use {@link RalioClient.create} to
- * load them eagerly and fail fast instead.
+ * To manage credentials yourself, pass `clientId` + `privateKeyPath` or a
+ * custom `credentialStore`. Credentials load on the first request; use
+ * {@link RalioClient.create} to load them eagerly and fail fast instead.
  */
 export class RalioClient {
   readonly agents: AgentsResource;
@@ -114,8 +141,10 @@ class LazyTransport implements TransportLike {
 
 async function buildTransport(opts: RalioClientOptions): Promise<Transport> {
   const baseUrl = resolveBaseUrl(opts.baseUrl);
-  const { clientId, pem } = await resolveCredentials(opts);
-  const { privateKey, publicJwk, kid } = await loadPrivateKey(pem);
+  const credentialStore = credentialStoreFromOptions(opts);
+  const credentials = await credentialStore.load();
+  const { clientId, keyMaterial } = await loadCredentialMaterial(credentials);
+  const { privateKey, publicJwk, kid } = keyMaterial;
 
   const tokens = new TokenManager({
     clientId,
@@ -123,6 +152,8 @@ async function buildTransport(opts: RalioClientOptions): Promise<Transport> {
     kid,
     tokenUrl: `${baseUrl}/oauth/token`,
     scopes: opts.scopes,
+    refreshToken: credentials.refreshToken ?? null,
+    saveRefreshToken: (refreshToken) => credentialStore.saveRefreshToken(refreshToken),
   });
   return new Transport({
     baseUrl,
@@ -133,11 +164,14 @@ async function buildTransport(opts: RalioClientOptions): Promise<Transport> {
   });
 }
 
-async function resolveCredentials(
-  opts: RalioClientOptions,
-): Promise<{ clientId: string; pem: string }> {
+function credentialStoreFromOptions(opts: RalioClientOptions): CredentialStore {
+  if ("credentialStore" in opts && opts.credentialStore) return opts.credentialStore;
   if (opts.clientId && opts.privateKeyPath) {
-    return { clientId: opts.clientId, pem: await readFile(opts.privateKeyPath, "utf8") };
+    return new LocalFileCredentialStore({
+      clientId: opts.clientId,
+      privateKeyPath: opts.privateKeyPath,
+      refreshTokenPath: opts.refreshTokenPath,
+    });
   }
   if (opts.clientId || opts.privateKeyPath) {
     throw new RalioConfigError(
@@ -145,31 +179,105 @@ async function resolveCredentials(
         "the credentials persisted by register().",
     );
   }
+  return new PersistedCredentialStore(opts.refreshTokenPath);
+}
 
-  const stored = await loadCredentials();
-  const clientId = typeof stored?.client_id === "string" ? stored.client_id : "";
-  const jkt = typeof stored?.key_jkt === "string" ? stored.key_jkt : "";
-  const keyPath =
-    typeof stored?.key_path === "string" && stored.key_path
-      ? stored.key_path
-      : jkt
-        ? keyPathFor(jkt)
-        : "";
-  if (!clientId || !keyPath) {
-    throw new RalioConfigError(
-      `No Ralio credentials found at ${credentialsPath()}. Run register() ` +
-        "(or `ralio auth agent`) on this host first, or pass clientId and " +
-        "privateKeyPath explicitly.",
-    );
+async function loadCredentialMaterial(
+  credentials: StoredCredentials,
+): Promise<{ clientId: string; keyMaterial: KeyMaterial }> {
+  if (!credentials.clientId) {
+    throw new RalioConfigError("credential store did not provide client_id");
   }
-  let pem: string;
+  const keyMaterial = credentials.privateKeyPem
+    ? await loadPrivateKey(credentials.privateKeyPem)
+    : credentials.privateJwk
+      ? await loadPrivateJwk(credentials.privateJwk)
+      : null;
+  if (!keyMaterial) {
+    throw new RalioConfigError("credential store did not provide private key material");
+  }
+  if (credentials.publicJwk && !samePublicJwk(credentials.publicJwk, keyMaterial.publicJwk)) {
+    throw new RalioConfigError("stored public JWK does not match the private key");
+  }
+  if (credentials.kid && credentials.kid !== keyMaterial.kid) {
+    throw new RalioConfigError("stored key id does not match the private key");
+  }
+  return { clientId: credentials.clientId, keyMaterial };
+}
+
+class PersistedCredentialStore implements CredentialStore {
+  constructor(private readonly refreshTokenPath?: string) {}
+
+  async load(): Promise<StoredCredentials> {
+    const stored = await loadPersistedCredentials();
+    const clientId = typeof stored?.client_id === "string" ? stored.client_id : "";
+    const jkt = typeof stored?.key_jkt === "string" ? stored.key_jkt : "";
+    const keyPath =
+      typeof stored?.key_path === "string" && stored.key_path
+        ? stored.key_path
+        : jkt
+          ? keyPathFor(jkt)
+          : "";
+    if (!clientId || !keyPath) {
+      throw new RalioConfigError(
+        `No Ralio credentials found at ${credentialsPath()}. Run register() ` +
+          "on this host first, or pass clientId and privateKeyPath explicitly.",
+      );
+    }
+
+    let privateKeyPem: string;
+    try {
+      privateKeyPem = await readFile(keyPath, "utf8");
+    } catch {
+      throw new RalioConfigError(
+        `Private key missing at ${keyPath} — the binding may have been revoked ` +
+          "and the key removed. Re-run register() with a fresh ticket.",
+      );
+    }
+
+    const instanceRefreshToken = this.refreshTokenPath
+      ? await loadRefreshTokenFile(this.refreshTokenPath)
+      : stored?.refresh_token || null;
+    return {
+      clientId,
+      privateKeyPem,
+      kid: jkt || undefined,
+      refreshToken: instanceRefreshToken,
+    };
+  }
+
+  async saveRefreshToken(refreshToken: string | null): Promise<void> {
+    if (this.refreshTokenPath) {
+      await saveRefreshTokenFile(this.refreshTokenPath, refreshToken);
+      return;
+    }
+    const stored = await loadPersistedCredentials();
+    if (!stored) {
+      throw new RalioConfigError(
+        `No Ralio credentials found at ${credentialsPath()}; cannot save refresh token`,
+      );
+    }
+    await savePersistedCredentials({ ...stored, refresh_token: refreshToken ?? "" });
+  }
+}
+
+async function loadRefreshTokenFile(path: string): Promise<string | null> {
   try {
-    pem = await readFile(keyPath, "utf8");
+    const token = (await readFile(path, "utf8")).trim();
+    return token || null;
   } catch {
-    throw new RalioConfigError(
-      `Private key missing at ${keyPath} — the binding may have been revoked ` +
-        "and the key removed. Re-run register() with a fresh ticket.",
-    );
+    return null;
   }
-  return { clientId, pem };
+}
+
+async function saveRefreshTokenFile(path: string, refreshToken: string | null): Promise<void> {
+  if (refreshToken == null) {
+    await rm(path, { force: true });
+    return;
+  }
+  await writeFile(path, `${refreshToken}\n`, { mode: 0o600 });
+}
+
+function samePublicJwk(a: PublicJwk, b: PublicJwk): boolean {
+  return a.crv === b.crv && a.kty === b.kty && a.x === b.x && a.y === b.y;
 }

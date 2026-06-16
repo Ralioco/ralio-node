@@ -1,16 +1,16 @@
 /**
  * One-time credential-binding registration (the operator side).
  *
- * The owner mints a `ralio-reg-…` ticket in the console — that is where
- * consent happens. The operator calls {@link register} on the agent host: it
- * generates a P-256 keypair locally and submits the public key with the
- * ticket; the binding is active as soon as the server responds. The owner
- * gets an email receipt with a revoke link. The private key never leaves the
- * host.
+ * The owner mints a `ralio-reg-...` ticket in the console — that is where
+ * consent happens. The operator calls {@link register}: it generates a P-256
+ * keypair locally and submits the public key with the ticket; the binding is
+ * active as soon as the server responds. The owner gets an email receipt with
+ * a revoke link. The private key never leaves your environment.
  *
- * On activation the first access token is minted and the credentials are
- * persisted to `~/.ralio/` (same store as `ralio auth agent`), so a
- * no-argument `new RalioClient()` works from then on.
+ * By default activation mints the first access token and persists credentials
+ * to the local Ralio credential store, so a no-argument `new RalioClient()`
+ * works from then on. Pass a writable credential store to persist identity
+ * material somewhere else.
  */
 
 import { access } from "node:fs/promises";
@@ -23,6 +23,7 @@ import {
   type CryptoKey,
   type PublicJwk,
 } from "./crypto.js";
+import type { WritableCredentialStore } from "./credentials.js";
 import { RalioConfigError, RalioRegistrationError, raiseForResponse } from "./errors.js";
 import {
   deletePrivateKey,
@@ -38,9 +39,8 @@ export { DEFAULT_BASE_URL } from "./store.js";
 
 export interface RegisterOptions {
   /**
-   * Registration ticket (`ralio-reg-…`) from the console. Defaults to the
-   * `RALIO_REGISTRATION_TICKET` environment variable — the same one the CLI
-   * and Python SDK read.
+   * Registration ticket (`ralio-reg-...`) from the console. Defaults to the
+   * `RALIO_REGISTRATION_TICKET` environment variable.
    */
   ticket?: string;
   /**
@@ -48,6 +48,8 @@ export interface RegisterOptions {
    * inside the shared credential store.
    */
   privateKeyPath?: string;
+  /** Optional store for generated identity material. */
+  credentialStore?: WritableCredentialStore;
   /** API origin. Defaults to `RALIO_API_URL`, else production. */
   baseUrl?: string;
   requestedScopes?: string[];
@@ -64,13 +66,13 @@ interface RegistrationResponse {
 /**
  * Register this host and return the active binding.
  *
- * One call, immediate activation: generates a keypair, writes the private
- * key to disk, and submits the public key with the ticket. The binding is
+ * One call, immediate activation: generates a keypair, writes/stores the
+ * private key, and submits the public key with the ticket. The binding is
  * active when the server responds — there is no owner-approval step (consent
  * happened when the owner minted the ticket; they receive an email receipt
  * with a revoke link). The first access token is then minted and the
- * credentials persisted, so `new RalioClient()` needs no arguments
- * afterwards.
+ * credentials persisted, so `new RalioClient()` needs no arguments afterwards
+ * when the default store is used.
  *
  * Rejects with a {@link RalioRegistrationError} when the ticket is invalid,
  * expired, or already consumed, or the public key is unusable.
@@ -86,29 +88,33 @@ export async function register(opts: RegisterOptions = {}): Promise<CredentialBi
   const base = resolveBaseUrl(opts.baseUrl);
 
   const { privateKey, publicJwk, kid } = await generateKeypair();
+  const privateKeyPem = await privateKeyToPem(privateKey);
+  const credentialStore = opts.credentialStore;
 
-  let keyPath: string;
-  if (opts.privateKeyPath) {
+  let keyPath = "";
+  if (credentialStore) {
+    await credentialStore.saveCredentials({ privateKeyPem, publicJwk, kid });
+  } else if (opts.privateKeyPath) {
     if (!opts.overwrite && (await exists(opts.privateKeyPath))) {
       throw new RalioRegistrationError(
         `${opts.privateKeyPath} already exists; pass overwrite: true to replace it`,
       );
     }
     keyPath = opts.privateKeyPath;
+    await savePrivateKey(keyPath, privateKeyPem);
   } else {
     // Thumbprint-named keys in the store are unique per keypair, so there is
     // nothing to clobber.
     await ensureKeysDir();
     keyPath = keyPathFor(kid);
+    await savePrivateKey(keyPath, privateKeyPem);
   }
-  await savePrivateKey(keyPath, await privateKeyToPem(privateKey));
 
   let payload: RegistrationResponse;
   try {
     payload = await submit(base, ticket, opts, publicJwk);
   } catch (err) {
-    // No binding was created — a key bound to nothing is dead weight.
-    await deletePrivateKey(keyPath);
+    if (keyPath) await deletePrivateKey(keyPath);
     throw err;
   }
 
@@ -117,7 +123,7 @@ export async function register(opts: RegisterOptions = {}): Promise<CredentialBi
   // key was rewritten in flight, or a server bug) — the credential must be
   // revoked, not used.
   if (payload.fingerprint && payload.fingerprint !== kid) {
-    await deletePrivateKey(keyPath);
+    if (keyPath) await deletePrivateKey(keyPath);
     const handle = payload.client_id ? ` ${payload.client_id}` : "";
     throw new RalioRegistrationError(
       "fingerprint mismatch between local key and server response: the " +
@@ -130,26 +136,37 @@ export async function register(opts: RegisterOptions = {}): Promise<CredentialBi
     // Pre-cutover server: it created a pending binding for our public key
     // and expects owner approval + polling. Keep the key — the owner may
     // still approve the pending binding on the old flow.
+    const location = keyPath ? keyPath : "the credential store";
     throw new RalioRegistrationError(
       "registration response did not include a client_id — this server " +
         "still requires owner approval; upgrade the server to synchronous " +
-        `activation (the private key was kept at ${keyPath})`,
+        `activation (the private key was kept at ${location})`,
     );
   }
   const clientId = payload.client_id;
 
   const token = await mintFirstToken(base, clientId, privateKey, kid);
-  await saveCredentials({
-    access_token: token.access_token,
-    refresh_token: token.refresh_token ?? "",
-    expires_in: token.expires_in ?? 1800,
-    obtained_at: Date.now() / 1000,
-    client_id: clientId,
-    key_jkt: kid,
-    key_path: keyPath,
-    scope: token.scope ?? "",
-    auth_method: "private_key_jwt",
-  });
+  if (credentialStore) {
+    await credentialStore.saveCredentials({
+      clientId,
+      privateKeyPem,
+      publicJwk,
+      kid,
+      refreshToken: token.refresh_token ?? null,
+    });
+  } else {
+    await saveCredentials({
+      access_token: token.access_token,
+      refresh_token: token.refresh_token ?? "",
+      expires_in: token.expires_in ?? 1800,
+      obtained_at: Date.now() / 1000,
+      client_id: clientId,
+      key_jkt: kid,
+      key_path: keyPath,
+      scope: token.scope ?? "",
+      auth_method: "private_key_jwt",
+    });
+  }
 
   const scopes = token.scope
     ? token.scope.split(" ").filter(Boolean)

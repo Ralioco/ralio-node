@@ -1,9 +1,8 @@
 /**
- * On-disk credential store, shared with the Ralio CLI.
+ * Default on-disk credential store for the SDK.
  *
- * The layout mirrors the CLI byte-for-byte so {@link register} here and
- * `ralio auth agent` are interchangeable — either one can write the
- * credentials and the other (or {@link RalioClient}) can consume them:
+ * The layout lets {@link register} write credentials that {@link RalioClient}
+ * can consume later without additional configuration:
  *
  * - `~/.ralio/credentials.json` (0600) — `client_id`, `key_jkt`, tokens.
  * - `~/.ralio/keys/<jkt>.pem`   (0600) — the P-256 private key, PKCS8 PEM,
@@ -55,10 +54,8 @@ export function keyPathFor(jkt: string): string {
 }
 
 /**
- * The persisted credential shape. Field names match the CLI's
- * `credentials.json` exactly; `key_path` is an SDK extension recording where
- * the key actually lives when the caller chose a custom `privateKeyPath`
- * (the CLI ignores unknown fields).
+ * The persisted credential shape. `key_path` records where the key actually
+ * lives when the caller chose a custom `privateKeyPath`.
  */
 export interface StoredCredentials {
   access_token?: string;
