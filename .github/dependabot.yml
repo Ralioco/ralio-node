@@ -9,6 +9,12 @@ updates:
         patterns:
           - "*"
     ignore:
+      # typescript-eslint 8.71 requires TypeScript below 6.1.
+      - dependency-name: "typescript"
+        versions: [">=6.1.0"]
+      # Vitest 5 requires Node 22+ types; the SDK still supports Node 20.
+      - dependency-name: "vitest"
+        versions: [">=5.0.0"]
       # Keep @types/node on the lowest Node major we support (see "engines")
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]

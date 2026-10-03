@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep TypeScript on 6.0 and Vitest on 4.x for compatibility with ESLint tooling
+  and the supported Node 20 runtime.
 - Zero-friction onboarding: `register()` now takes no required arguments and
   `new RalioClient()` works with no configuration at all.
   - `register()` defaults its ticket to the `RALIO_REGISTRATION_TICKET`
