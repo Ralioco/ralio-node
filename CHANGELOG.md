@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade development tooling and refresh the lockfile to address Dependabot
+  alerts in Vite, brace-expansion, source-map-js, and esbuild.
 - Keep TypeScript on 6.0 and Vitest on 4.x for compatibility with ESLint tooling
   and the supported Node 20 runtime.
 - Zero-friction onboarding: `register()` now takes no required arguments and
